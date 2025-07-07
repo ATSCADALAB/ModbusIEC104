@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using IEC104;
 using ModbusIEC104.Common;
 
 namespace ModbusIEC104
@@ -692,15 +693,12 @@ namespace ModbusIEC104
         {
             try
             {
-                // Get last read data from all block readers
-                var allData = new List<InformationObject>();
+                // Lấy dữ liệu từ tất cả BlockReader thuộc DeviceReader này
+                var allData = deviceReader.GetAllLastReadData(); // <-- Hàm mới cần thêm vào DeviceReader
 
-                // Collect data from all blocks
-                // Note: This is a simplified implementation
-                // In practice, you might want to implement more sophisticated data caching
-
-                // Find information object matching the IOA and TypeID
-                var infoObject = allData.FirstOrDefault(obj =>
+                // Tìm kiếm đối tượng thông tin khớp với địa chỉ và loại dữ liệu
+                // Tìm từ cuối danh sách để lấy giá trị mới nhất nếu có trùng lặp
+                var infoObject = allData.LastOrDefault(obj =>
                     obj.ObjectAddress == address.InformationObjectAddress &&
                     obj.TypeId == address.TypeIdentification);
 

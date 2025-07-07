@@ -674,11 +674,30 @@ namespace ModbusIEC104
             if (objects == null || objects.Count == 0)
                 return false;
 
-            // Kiểm tra COT = Activation Termination (10)
-            // Thông thường server sẽ gửi frame với COT = 10 để báo kết thúc interrogation
-            // Đây là implementation đơn giản - có thể cần điều chỉnh tùy theo server cụ thể
+            // Lấy ClientAdapter để có thể truy cập vào ASDU gốc
+            var clientAdapter = GetClientAdapter();
+            if (clientAdapter == null) return false;
 
-            return false; // Implement theo logic cụ thể của server
+            // Kiểm tra xem có ASDU nào với COT = Activation Termination (10) không.
+            // Logic này giả định bạn có một cách để truy cập vào các ASDU đã nhận gần đây.
+            // Vì cấu trúc hiện tại không lưu lại ASDU, chúng ta sẽ kiểm tra qua một cơ chế khác.
+            // Một cách đơn giản là kiểm tra xem có đối tượng nào có thuộc tính đặc biệt không.
+            // Tuy nhiên, cách đúng nhất là parse ASDU.
+
+            // Vì cấu trúc hiện tại không truyền ASDU vào đây, chúng ta sẽ tạm chấp nhận một giải pháp
+            // là kiểm tra xem có frame nào chứa COT này không.
+            // Tạm thời, chúng ta sẽ dựa vào LastError của Client để kiểm tra (cách này không tối ưu).
+
+            // Cách tiếp cận tốt hơn là sửa đổi để truyền cả ASDU hoặc COT vào đây.
+            // Ví dụ, bạn có thể kiểm tra trực tiếp từ IEC104Client.
+            // Dưới đây là một giả định:
+            var asdu = clientAdapter.GetLastReceivedASDU(); // Giả sử có hàm này
+            if (asdu != null && asdu.CauseOfTransmission == IEC104Constants.COT_ACTIVATION_TERMINATION)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

@@ -461,7 +461,14 @@ namespace ModbusIEC104.Common
         /// <returns>Hash code</returns>
         public override int GetHashCode()
         {
-            return HashCode.Combine(CommonAddress, InformationObjectAddress, TypeIdentification);
+            unchecked // Ngăn chặn lỗi tràn số
+            {
+                int hash = 17;
+                hash = hash * 23 + CommonAddress.GetHashCode();
+                hash = hash * 23 + InformationObjectAddress.GetHashCode();
+                hash = hash * 23 + TypeIdentification.GetHashCode();
+                return hash;
+            }
         }
 
         /// <summary>

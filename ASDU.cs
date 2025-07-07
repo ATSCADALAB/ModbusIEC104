@@ -1287,7 +1287,18 @@ namespace ModbusIEC104
         /// <returns>Hash code</returns>
         public override int GetHashCode()
         {
-            return HashCode.Combine(TypeID, CauseOfTransmission, CommonAddress, SequenceBit, TestBit, NegativeBit, OriginatorAddress);
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 23 + TypeID.GetHashCode();
+                hash = hash * 23 + CauseOfTransmission.GetHashCode();
+                hash = hash * 23 + CommonAddress.GetHashCode();
+                hash = hash * 23 + SequenceBit.GetHashCode();
+                hash = hash * 23 + TestBit.GetHashCode();
+                hash = hash * 23 + NegativeBit.GetHashCode();
+                hash = hash * 23 + OriginatorAddress.GetHashCode();
+                return hash;
+            }
         }
         #endregion
     }
