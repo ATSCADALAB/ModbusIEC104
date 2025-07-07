@@ -44,11 +44,14 @@
     <Compile Include="ASDU.cs" />
     <Compile Include="BlockReader.cs" />
     <Compile Include="Common\Address.cs" />
+    <Compile Include="Common\BaseAddress.cs" />
     <Compile Include="Common\Converter.cs" />
     <Compile Include="Common\DataType.cs" />
     <Compile Include="DeviceReader.cs" />
     <Compile Include="IEC104Client.cs" />
+    <Compile Include="IEC104ClientAdapter.cs" />
     <Compile Include="IEC104Constants.cs" />
+    <Compile Include="IEC104Driver.cs" />
     <Compile Include="IEC104Frame.cs" />
     <Compile Include="IEC104Socket.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
