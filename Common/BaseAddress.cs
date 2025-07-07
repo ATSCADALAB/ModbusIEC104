@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace ModbusIEC104.Common
+namespace IEC104
 {
     /// <summary>
     /// Base class cho tất cả các loại address

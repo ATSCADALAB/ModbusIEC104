@@ -2,7 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
-using ModbusIEC104.Common;
+using ATDriver_Server;
+using IEC104;
 
 namespace ModbusIEC104
 {

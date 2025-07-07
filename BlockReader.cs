@@ -1,931 +1,530 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using ModbusIEC104.Common;
 
-namespace ModbusIEC104
+namespace IEC104
 {
     /// <summary>
-    /// Block Reader cho IEC104 - quản lý việc đọc dữ liệu theo block/group
+    /// Loại interrogation cho IEC104
     /// </summary>
-    public class BlockReader : IDisposable
+    public enum InterrogationType : byte
     {
-        #region FIELDS
-        private readonly DeviceReader deviceReader;
-        private readonly IEC104BlockSettings blockSettings;
-        private readonly object lockObject = new object();
-        private Timer readTimer;
-        private bool isDisposed = false;
-        private bool isInitialized = false;
-        #endregion
+        /// <summary>Station interrogation (global)</summary>
+        Station = IEC104Constants.QOI_STATION,
+        /// <summary>Group 1 interrogation</summary>
+        Group1 = IEC104Constants.QOI_GROUP_1,
+        /// <summary>Group 2 interrogation</summary>
+        Group2 = IEC104Constants.QOI_GROUP_2,
+        /// <summary>Group 3 interrogation</summary>
+        Group3 = IEC104Constants.QOI_GROUP_3,
+        /// <summary>Group 4 interrogation</summary>
+        Group4 = IEC104Constants.QOI_GROUP_4
+    }
 
+    /// <summary>
+    /// IEC104 Block Reader - quản lý việc đọc data theo blocks/groups
+    /// Khác với Modbus, IEC104 sử dụng Interrogation thay vì đọc sequential addresses
+    /// </summary>
+    public class IEC104BlockReader
+    {
         #region PROPERTIES
-        /// <summary>Tên block</summary>
-        public string BlockName => blockSettings?.Name ?? "Unknown";
 
-        /// <summary>Block có được kích hoạt không</summary>
-        public bool Enabled => blockSettings?.Enabled ?? false;
-
-        /// <summary>Block có đang chạy không</summary>
-        public bool IsRunning { get; private set; }
-
-        /// <summary>Thời gian đọc cuối</summary>
-        public DateTime LastReadTime { get; private set; }
-
-        /// <summary>Thời gian đọc thành công cuối</summary>
-        public DateTime LastSuccessfulReadTime { get; private set; }
-
-        /// <summary>Lỗi cuối</summary>
-        public string LastError { get; private set; }
-
-        /// <summary>Số lần đọc</summary>
-        public int ReadCount { get; private set; }
-
-        /// <summary>Số lần đọc thành công</summary>
-        public int SuccessfulReadCount { get; private set; }
-
-        /// <summary>Số lần lỗi</summary>
-        public int ErrorCount { get; private set; }
-
-        /// <summary>Khoảng thời gian đọc (ms)</summary>
-        public int ReadInterval => blockSettings?.ReadInterval ?? 1000;
-
-        /// <summary>Common Address</summary>
-        public ushort CommonAddress => blockSettings?.CommonAddress ?? 1;
+        /// <summary>Common Address của station</summary>
+        public ushort CommonAddress { get; set; }
 
         /// <summary>Loại interrogation</summary>
-        public InterrogationType InterrogationType => blockSettings?.InterrogationType ?? InterrogationType.General;
+        public InterrogationType InterrogationType { get; set; }
 
-        /// <summary>Danh sách IOA ranges</summary>
-        public List<IOARange> IOARanges => blockSettings?.IOARanges ?? new List<IOARange>();
+        /// <summary>Danh sách IOA được quan tâm (để filter data)</summary>
+        public HashSet<uint> FilteredIOAs { get; set; }
 
-        /// <summary>Danh sách TypeID filters</summary>
-        public List<byte> TypeIDFilters => blockSettings?.TypeIDFilters ?? new List<byte>();
+        /// <summary>Danh sách TypeID được quan tâm</summary>
+        public HashSet<byte> FilteredTypeIDs { get; set; }
 
-        /// <summary>Dữ liệu đã đọc gần nhất</summary>
-        public List<InformationObject> LastReadData { get; private set; } = new List<InformationObject>();
+        /// <summary>Cache chứa data nhận được từ interrogation</summary>
+        public Dictionary<uint, InformationObject> DataCache { get; private set; }
+
+        /// <summary>Thời gian interrogation cuối cùng</summary>
+        public DateTime LastInterrogationTime { get; private set; }
+
+        /// <summary>Kết quả interrogation cuối cùng</summary>
+        public bool LastInterrogationSuccess { get; private set; }
+
+        /// <summary>Số lượng objects nhận được</summary>
+        public int ReceivedObjectCount => DataCache?.Count ?? 0;
+
+        /// <summary>Block có hợp lệ không</summary>
+        public bool IsValid { get; private set; }
+
+        /// <summary>Tên block để debug</summary>
+        public string BlockName { get; set; }
+
+        /// <summary>Enable/disable block này</summary>
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>Timeout cho interrogation (seconds)</summary>
+        public int InterrogationTimeout { get; set; } = 30;
+
         #endregion
 
         #region CONSTRUCTORS
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="deviceReader">Device reader parent</param>
-        /// <param name="blockSettings">Block settings</param>
-        public BlockReader(DeviceReader deviceReader, IEC104BlockSettings blockSettings)
-        {
-            this.deviceReader = deviceReader ?? throw new ArgumentNullException(nameof(deviceReader));
-            this.blockSettings = blockSettings ?? throw new ArgumentNullException(nameof(blockSettings));
 
-            LastReadTime = DateTime.MinValue;
-            LastSuccessfulReadTime = DateTime.MinValue;
+        /// <summary>
+        /// Constructor mặc định
+        /// </summary>
+        public IEC104BlockReader()
+        {
+            FilteredIOAs = new HashSet<uint>();
+            FilteredTypeIDs = new HashSet<byte>();
+            DataCache = new Dictionary<uint, InformationObject>();
+            InterrogationType = InterrogationType.Station;
+            LastInterrogationTime = DateTime.MinValue;
+            IsValid = true;
         }
+
+        /// <summary>
+        /// Constructor với Common Address
+        /// </summary>
+        /// <param name="commonAddress">Common Address</param>
+        /// <param name="interrogationType">Loại interrogation</param>
+        public IEC104BlockReader(ushort commonAddress, InterrogationType interrogationType = InterrogationType.Station)
+            : this()
+        {
+            CommonAddress = commonAddress;
+            InterrogationType = interrogationType;
+            BlockName = $"CA{commonAddress}-{interrogationType}";
+        }
+
         #endregion
 
-        #region INITIALIZE & DISPOSE
+        #region FILTER METHODS
+
         /// <summary>
-        /// Khởi tạo block reader
+        /// Thêm IOA vào filter list
         /// </summary>
-        /// <returns>True nếu thành công</returns>
-        public bool Initialize()
+        /// <param name="ioa">Information Object Address</param>
+        public void AddIOAFilter(uint ioa)
         {
-            try
+            if (ioa > 0 && ioa <= 16777215)
             {
-                if (isInitialized)
-                    return true;
-
-                if (!Enabled)
-                {
-                    LastError = "Block is disabled";
-                    return false;
-                }
-
-                // Validate settings
-                if (!ValidateSettings())
-                    return false;
-
-                // Initialize read timer
-                InitializeReadTimer();
-
-                isInitialized = true;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Initialize failed: {ex.Message}";
-                return false;
+                FilteredIOAs.Add(ioa);
             }
         }
 
         /// <summary>
-        /// Dispose block reader
+        /// Thêm range IOA vào filter
         /// </summary>
-        public void Dispose()
+        /// <param name="fromIOA">IOA bắt đầu</param>
+        /// <param name="toIOA">IOA kết thúc</param>
+        public void AddIOARange(uint fromIOA, uint toIOA)
         {
-            if (!isDisposed)
-            {
-                Stop();
-                readTimer?.Dispose();
-                readTimer = null;
-                isDisposed = true;
-            }
-        }
-        #endregion
-
-        #region PUBLIC METHODS
-        /// <summary>
-        /// Bắt đầu đọc block
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        public bool Start()
-        {
-            try
-            {
-                if (!isInitialized)
-                {
-                    if (!Initialize())
-                        return false;
-                }
-
-                if (IsRunning)
-                    return true;
-
-                if (!Enabled)
-                {
-                    LastError = "Block is disabled";
-                    return false;
-                }
-
-                // Start timer
-                var interval = ReadInterval > 0 ? ReadInterval : 1000;
-                readTimer?.Change(0, interval);
-
-                IsRunning = true;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Start failed: {ex.Message}";
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Dừng đọc block
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        public bool Stop()
-        {
-            try
-            {
-                if (!IsRunning)
-                    return true;
-
-                // Stop timer
-                readTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
-                IsRunning = false;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Stop failed: {ex.Message}";
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Đọc block một lần
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        public bool ReadBlock()
-        {
-            if (!Enabled || isDisposed)
-                return false;
-
-            try
-            {
-                lock (lockObject)
-                {
-                    LastReadTime = DateTime.Now;
-                    ReadCount++;
-
-                    bool success = false;
-
-                    switch (blockSettings.ReadStrategy)
-                    {
-                        case BlockReadStrategy.Interrogation:
-                            success = PerformInterrogation();
-                            break;
-
-                        case BlockReadStrategy.SpontaneousData:
-                            success = ProcessSpontaneousData();
-                            break;
-
-                        case BlockReadStrategy.SpecificIOAs:
-                            success = ReadSpecificIOAs();
-                            break;
-
-                        case BlockReadStrategy.Cyclic:
-                            success = PerformCyclicRead();
-                            break;
-
-                        default:
-                            success = PerformInterrogation(); // Default fallback
-                            break;
-                    }
-
-                    if (success)
-                    {
-                        SuccessfulReadCount++;
-                        LastSuccessfulReadTime = DateTime.Now;
-                        LastError = null;
-                    }
-                    else
-                    {
-                        ErrorCount++;
-                    }
-
-                    return success;
-                }
-            }
-            catch (Exception ex)
-            {
-                LastError = $"ReadBlock failed: {ex.Message}";
-                ErrorCount++;
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Đọc block bất đồng bộ
-        /// </summary>
-        /// <returns>Task với kết quả đọc</returns>
-        public async Task<bool> ReadBlockAsync()
-        {
-            return await Task.Run(() => ReadBlock());
-        }
-        #endregion
-
-        #region READING STRATEGIES
-        /// <summary>
-        /// Thực hiện Interrogation
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        private bool PerformInterrogation()
-        {
-            try
-            {
-                var clientAdapter = GetClientAdapter();
-                if (clientAdapter == null)
-                {
-                    LastError = "Client adapter not available";
-                    return false;
-                }
-
-                // Gửi interrogation command
-                var result = clientAdapter.SendInterrogation(CommonAddress, InterrogationType);
-                if (!result)
-                {
-                    LastError = "Failed to send interrogation command";
-                    return false;
-                }
-
-                // Đợi và xử lý response
-                var responseData = WaitForInterrogationResponse();
-                if (responseData != null && responseData.Count > 0)
-                {
-                    ProcessReceivedData(responseData);
-                    return true;
-                }
-                else
-                {
-                    LastError = "No data received from interrogation";
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Interrogation failed: {ex.Message}";
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Xử lý dữ liệu tự phát
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        private bool ProcessSpontaneousData()
-        {
-            try
-            {
-                var clientAdapter = GetClientAdapter();
-                if (clientAdapter == null)
-                {
-                    LastError = "Client adapter not available";
-                    return false;
-                }
-
-                var spontaneousData = clientAdapter.ProcessSpontaneousData();
-                if (spontaneousData != null && spontaneousData.Count > 0)
-                {
-                    // Filter dữ liệu theo block settings
-                    var filteredData = FilterData(spontaneousData);
-                    ProcessReceivedData(filteredData);
-                    return true;
-                }
-                else
-                {
-                    // Không có dữ liệu tự phát - không phải lỗi
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Spontaneous data processing failed: {ex.Message}";
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Đọc các IOA cụ thể
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        private bool ReadSpecificIOAs()
-        {
-            try
-            {
-                var clientAdapter = GetClientAdapter();
-                if (clientAdapter == null)
-                {
-                    LastError = "Client adapter not available";
-                    return false;
-                }
-
-                var allData = new List<InformationObject>();
-
-                // Đọc từng IOA range
-                foreach (var ioaRange in IOARanges)
-                {
-                    var rangeData = ReadIOARange(clientAdapter, ioaRange);
-                    if (rangeData != null)
-                    {
-                        allData.AddRange(rangeData);
-                    }
-                }
-
-                if (allData.Count > 0)
-                {
-                    ProcessReceivedData(allData);
-                    return true;
-                }
-                else
-                {
-                    LastError = "No data read from specific IOAs";
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Specific IOA reading failed: {ex.Message}";
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Thực hiện đọc theo chu kỳ
-        /// </summary>
-        /// <returns>True nếu thành công</returns>
-        private bool PerformCyclicRead()
-        {
-            try
-            {
-                var clientAdapter = GetClientAdapter();
-                if (clientAdapter == null)
-                {
-                    LastError = "Client adapter not available";
-                    return false;
-                }
-
-                // Combine interrogation và spontaneous data
-                var allData = new List<InformationObject>();
-
-                // 1. Đọc dữ liệu tự phát trước
-                var spontaneousData = clientAdapter.ProcessSpontaneousData();
-                if (spontaneousData != null)
-                {
-                    allData.AddRange(FilterData(spontaneousData));
-                }
-
-                // 2. Nếu cần, thực hiện interrogation
-                if (ShouldPerformInterrogation())
-                {
-                    var interrogationData = WaitForInterrogationResponse();
-                    if (interrogationData != null)
-                    {
-                        allData.AddRange(FilterData(interrogationData));
-                    }
-                }
-
-                ProcessReceivedData(allData);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Cyclic read failed: {ex.Message}";
-                return false;
-            }
-        }
-        #endregion
-
-        #region HELPER METHODS
-        /// <summary>
-        /// Validate block settings
-        /// </summary>
-        /// <returns>True nếu hợp lệ</returns>
-        private bool ValidateSettings()
-        {
-            if (blockSettings == null)
-            {
-                LastError = "Block settings is null";
-                return false;
-            }
-
-            if (!IEC104Constants.IsValidCommonAddress(CommonAddress))
-            {
-                LastError = $"Invalid Common Address: {CommonAddress}";
-                return false;
-            }
-
-            if (ReadInterval <= 0)
-            {
-                LastError = $"Invalid read interval: {ReadInterval}";
-                return false;
-            }
-
-            // Validate IOA ranges
-            foreach (var range in IOARanges)
-            {
-                if (!IEC104Constants.IsValidIOA(range.StartIOA) || !IEC104Constants.IsValidIOA(range.EndIOA))
-                {
-                    LastError = $"Invalid IOA range: {range.StartIOA} - {range.EndIOA}";
-                    return false;
-                }
-
-                if (range.StartIOA > range.EndIOA)
-                {
-                    LastError = $"Invalid IOA range order: {range.StartIOA} > {range.EndIOA}";
-                    return false;
-                }
-            }
-
-            // Validate TypeID filters
-            foreach (var typeId in TypeIDFilters)
-            {
-                if (!IEC104Constants.IsValidTypeID(typeId))
-                {
-                    LastError = $"Invalid TypeID filter: {typeId}";
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Khởi tạo read timer
-        /// </summary>
-        private void InitializeReadTimer()
-        {
-            var interval = ReadInterval > 0 ? ReadInterval : 1000;
-            readTimer = new Timer(ReadTimerCallback, null, Timeout.Infinite, interval);
-        }
-
-        /// <summary>
-        /// Read timer callback
-        /// </summary>
-        /// <param name="state">Timer state</param>
-        private void ReadTimerCallback(object state)
-        {
-            if (!IsRunning || isDisposed || !Enabled)
+            if (fromIOA > toIOA || fromIOA == 0 || toIOA > 16777215)
                 return;
 
-            Task.Run(() => ReadBlock());
-        }
-
-        /// <summary>
-        /// Lấy client adapter từ device reader
-        /// </summary>
-        /// <returns>Client adapter hoặc null</returns>
-        private IEC104ClientAdapter GetClientAdapter()
-        {
-            return deviceReader?.GetClientAdapter() as IEC104ClientAdapter;
-        }
-
-        /// <summary>
-        /// Đợi response từ interrogation
-        /// </summary>
-        /// <returns>Danh sách information objects</returns>
-        private List<InformationObject> WaitForInterrogationResponse()
-        {
-            var timeout = 5000; // 5 seconds timeout
-            var startTime = DateTime.Now;
-            var allData = new List<InformationObject>();
-
-            try
+            for (uint ioa = fromIOA; ioa <= toIOA; ioa++)
             {
-                var clientAdapter = GetClientAdapter();
-                if (clientAdapter == null)
-                    return null;
-
-                while ((DateTime.Now - startTime).TotalMilliseconds < timeout)
-                {
-                    if (clientAdapter.ReadInformationObjects(out List<InformationObject> objects))
-                    {
-                        if (objects != null && objects.Count > 0)
-                        {
-                            var filteredObjects = FilterData(objects);
-                            allData.AddRange(filteredObjects);
-
-                            // Kiểm tra xem có phải là kết thúc interrogation không
-                            if (IsInterrogationComplete(objects))
-                            {
-                                break;
-                            }
-                        }
-                    }
-
-                    Thread.Sleep(50); // Chờ 50ms trước khi thử lại
-                }
-
-                return allData;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Wait for interrogation response failed: {ex.Message}";
-                return null;
+                FilteredIOAs.Add(ioa);
             }
         }
 
         /// <summary>
-        /// Đọc dữ liệu từ một IOA range
-        /// </summary>
-        /// <param name="clientAdapter">Client adapter</param>
-        /// <param name="ioaRange">IOA range</param>
-        /// <returns>Danh sách information objects</returns>
-        private List<InformationObject> ReadIOARange(IEC104ClientAdapter clientAdapter, IOARange ioaRange)
-        {
-            try
-            {
-                var rangeData = new List<InformationObject>();
-
-                for (uint ioa = ioaRange.StartIOA; ioa <= ioaRange.EndIOA; ioa++)
-                {
-                    // Gửi read command cho từng IOA
-                    if (clientAdapter.SendCommand(CommonAddress, ioa, IEC104Constants.C_RD_NA_1, null))
-                    {
-                        // Đợi response
-                        Thread.Sleep(10); // Small delay between reads
-                    }
-                }
-
-                // Đọc tất cả responses
-                if (clientAdapter.ReadInformationObjects(out List<InformationObject> objects))
-                {
-                    if (objects != null)
-                    {
-                        // Filter theo IOA range
-                        var filteredObjects = objects.Where(obj =>
-                            obj.ObjectAddress >= ioaRange.StartIOA &&
-                            obj.ObjectAddress <= ioaRange.EndIOA).ToList();
-
-                        rangeData.AddRange(filteredObjects);
-                    }
-                }
-
-                return rangeData;
-            }
-            catch (Exception ex)
-            {
-                LastError = $"Read IOA range failed: {ex.Message}";
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Filter dữ liệu theo block settings
-        /// </summary>
-        /// <param name="data">Dữ liệu gốc</param>
-        /// <returns>Dữ liệu đã filter</returns>
-        private List<InformationObject> FilterData(List<InformationObject> data)
-        {
-            if (data == null || data.Count == 0)
-                return new List<InformationObject>();
-
-            var filteredData = data.AsEnumerable();
-
-            // Filter theo IOA ranges
-            if (IOARanges.Count > 0)
-            {
-                filteredData = filteredData.Where(obj =>
-                    IOARanges.Any(range =>
-                        obj.ObjectAddress >= range.StartIOA &&
-                        obj.ObjectAddress <= range.EndIOA));
-            }
-
-            // Filter theo TypeID
-            if (TypeIDFilters.Count > 0)
-            {
-                filteredData = filteredData.Where(obj =>
-                    TypeIDFilters.Contains(obj.TypeId));
-            }
-
-            return filteredData.ToList();
-        }
-
-        /// <summary>
-        /// Xử lý dữ liệu đã nhận
-        /// </summary>
-        /// <param name="data">Dữ liệu</param>
-        private void ProcessReceivedData(List<InformationObject> data)
-        {
-            if (data == null || data.Count == 0)
-                return;
-
-            lock (lockObject)
-            {
-                // Update last read data
-                LastReadData = new List<InformationObject>(data);
-
-                // Có thể thêm logic xử lý dữ liệu khác ở đây
-                // Ví dụ: lưu vào database, gửi events, etc.
-            }
-        }
-
-        /// <summary>
-        /// Kiểm tra xem interrogation đã hoàn thành chưa
-        /// </summary>
-        /// <param name="objects">Objects vừa nhận</param>
-        /// <returns>True nếu đã hoàn thành</returns>
-        private bool IsInterrogationComplete(List<InformationObject> objects)
-        {
-            if (objects == null || objects.Count == 0)
-                return false;
-
-            // Lấy ClientAdapter để có thể truy cập vào ASDU gốc
-            var clientAdapter = GetClientAdapter();
-            if (clientAdapter == null) return false;
-
-            // Kiểm tra xem có ASDU nào với COT = Activation Termination (10) không.
-            // Logic này giả định bạn có một cách để truy cập vào các ASDU đã nhận gần đây.
-            // Vì cấu trúc hiện tại không lưu lại ASDU, chúng ta sẽ kiểm tra qua một cơ chế khác.
-            // Một cách đơn giản là kiểm tra xem có đối tượng nào có thuộc tính đặc biệt không.
-            // Tuy nhiên, cách đúng nhất là parse ASDU.
-
-            // Vì cấu trúc hiện tại không truyền ASDU vào đây, chúng ta sẽ tạm chấp nhận một giải pháp
-            // là kiểm tra xem có frame nào chứa COT này không.
-            // Tạm thời, chúng ta sẽ dựa vào LastError của Client để kiểm tra (cách này không tối ưu).
-
-            // Cách tiếp cận tốt hơn là sửa đổi để truyền cả ASDU hoặc COT vào đây.
-            // Ví dụ, bạn có thể kiểm tra trực tiếp từ IEC104Client.
-            // Dưới đây là một giả định:
-            var asdu = clientAdapter.GetLastReceivedASDU(); // Giả sử có hàm này
-            if (asdu != null && asdu.CauseOfTransmission == IEC104Constants.COT_ACTIVATION_TERMINATION)
-            {
-                return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// Kiểm tra có nên thực hiện interrogation không
-        /// </summary>
-        /// <returns>True nếu nên thực hiện</returns>
-        private bool ShouldPerformInterrogation()
-        {
-            // Logic để quyết định khi nào cần interrogation
-            // Ví dụ: mỗi 10 lần đọc, hoặc khi có lỗi, etc.
-
-            var timeSinceLastInterrogation = DateTime.Now - LastSuccessfulReadTime;
-            return timeSinceLastInterrogation.TotalMinutes > 5; // Mỗi 5 phút một lần
-        }
-        #endregion
-
-        #region STATUS METHODS
-        /// <summary>
-        /// Lấy thông tin trạng thái block
-        /// </summary>
-        /// <returns>Thông tin trạng thái</returns>
-        public string GetStatusInfo()
-        {
-            var status = IsRunning ? "Running" : "Stopped";
-            var enabled = Enabled ? "Enabled" : "Disabled";
-
-            return $"Block[{BlockName}] - {status} | {enabled} | " +
-                   $"Reads: {ReadCount} | Success: {SuccessfulReadCount} | Errors: {ErrorCount} | " +
-                   $"Last: {LastReadTime:HH:mm:ss} | Data: {LastReadData.Count} objects";
-        }
-
-        /// <summary>
-        /// Lấy thống kê chi tiết
-        /// </summary>
-        /// <returns>Thống kê block</returns>
-        public BlockStatistics GetStatistics()
-        {
-            lock (lockObject)
-            {
-                return new BlockStatistics
-                {
-                    BlockName = BlockName,
-                    Enabled = Enabled,
-                    IsRunning = IsRunning,
-                    ReadInterval = ReadInterval,
-                    CommonAddress = CommonAddress,
-                    InterrogationType = InterrogationType,
-                    ReadStrategy = blockSettings?.ReadStrategy ?? BlockReadStrategy.Interrogation,
-
-                    ReadCount = ReadCount,
-                    SuccessfulReadCount = SuccessfulReadCount,
-                    ErrorCount = ErrorCount,
-                    SuccessRate = ReadCount > 0 ? (double)SuccessfulReadCount / ReadCount * 100 : 0,
-
-                    LastReadTime = LastReadTime,
-                    LastSuccessfulReadTime = LastSuccessfulReadTime,
-                    LastError = LastError,
-
-                    IOARangesCount = IOARanges.Count,
-                    TypeIDFiltersCount = TypeIDFilters.Count,
-                    LastDataObjectsCount = LastReadData.Count,
-
-                    IOARanges = new List<IOARange>(IOARanges),
-                    TypeIDFilters = new List<byte>(TypeIDFilters)
-                };
-            }
-        }
-
-        /// <summary>
-        /// Lấy dữ liệu đã đọc gần nhất
-        /// </summary>
-        /// <returns>Bản copy của dữ liệu</returns>
-        public List<InformationObject> GetLastReadData()
-        {
-            lock (lockObject)
-            {
-                return new List<InformationObject>(LastReadData);
-            }
-        }
-        #endregion
-
-        #region OVERRIDE METHODS
-        /// <summary>
-        /// String representation
-        /// </summary>
-        /// <returns>String representation</returns>
-        public override string ToString()
-        {
-            return $"BlockReader[{BlockName}] - CA:{CommonAddress}, Type:{InterrogationType}, Running:{IsRunning}";
-        }
-        #endregion
-    }
-
-    #region SUPPORTING CLASSES
-    /// <summary>
-    /// IEC104 Block Settings
-    /// </summary>
-    public class IEC104BlockSettings : BlockSettings
-    {
-        #region PROPERTIES
-        /// <summary>Common Address</summary>
-        public ushort CommonAddress { get; set; } = 1;
-
-        /// <summary>Loại Interrogation</summary>
-        public InterrogationType InterrogationType { get; set; } = InterrogationType.General;
-
-        /// <summary>Chiến lược đọc</summary>
-        public BlockReadStrategy ReadStrategy { get; set; } = BlockReadStrategy.Interrogation;
-
-        /// <summary>Danh sách IOA ranges</summary>
-        public List<IOARange> IOARanges { get; set; } = new List<IOARange>();
-
-        /// <summary>Danh sách TypeID filters</summary>
-        public List<byte> TypeIDFilters { get; set; } = new List<byte>();
-
-        /// <summary>Block ID duy nhất</summary>
-        public override string BlockID => $"{CommonAddress}-{InterrogationType}-{Name}";
-        #endregion
-
-        #region METHODS
-        /// <summary>
-        /// Thêm IOA range
-        /// </summary>
-        /// <param name="startIOA">IOA bắt đầu</param>
-        /// <param name="endIOA">IOA kết thúc</param>
-        public void AddIOARange(uint startIOA, uint endIOA)
-        {
-            if (IEC104Constants.IsValidIOA(startIOA) && IEC104Constants.IsValidIOA(endIOA) && startIOA <= endIOA)
-            {
-                IOARanges.Add(new IOARange { StartIOA = startIOA, EndIOA = endIOA });
-            }
-        }
-
-        /// <summary>
-        /// Thêm TypeID filter
+        /// Thêm TypeID vào filter
         /// </summary>
         /// <param name="typeId">Type ID</param>
         public void AddTypeIDFilter(byte typeId)
         {
-            if (IEC104Constants.IsValidTypeID(typeId) && !TypeIDFilters.Contains(typeId))
+            if (typeId > 0 && typeId <= 127)
             {
-                TypeIDFilters.Add(typeId);
+                FilteredTypeIDs.Add(typeId);
             }
         }
 
         /// <summary>
-        /// Validate settings
+        /// Clear tất cả filters
         /// </summary>
-        /// <returns>True nếu hợp lệ</returns>
-        public override bool IsValid()
+        public void ClearFilters()
         {
-            return base.IsValid() &&
-                   IEC104Constants.IsValidCommonAddress(CommonAddress) &&
-                   Enum.IsDefined(typeof(InterrogationType), InterrogationType);
+            FilteredIOAs.Clear();
+            FilteredTypeIDs.Clear();
         }
+
+        /// <summary>
+        /// Kiểm tra Information Object có pass qua filter không
+        /// </summary>
+        /// <param name="infoObject">Information Object</param>
+        /// <returns>True nếu pass filter</returns>
+        public bool PassesFilter(InformationObject infoObject)
+        {
+            if (infoObject == null)
+                return false;
+
+            // Nếu không có filter, pass tất cả
+            bool ioaFilterEmpty = FilteredIOAs.Count == 0;
+            bool typeFilterEmpty = FilteredTypeIDs.Count == 0;
+
+            if (ioaFilterEmpty && typeFilterEmpty)
+                return true;
+
+            // Check IOA filter
+            bool passIOAFilter = ioaFilterEmpty || FilteredIOAs.Contains(infoObject.InformationObjectAddress);
+
+            // Check TypeID filter
+            bool passTypeFilter = typeFilterEmpty || FilteredTypeIDs.Contains(infoObject.TypeID);
+
+            return passIOAFilter && passTypeFilter;
+        }
+
+        #endregion
+
+        #region INTERROGATION METHODS
+
+        /// <summary>
+        /// Thực hiện interrogation với IEC104 client
+        /// </summary>
+        /// <param name="client">IEC104 Client</param>
+        /// <returns>True nếu thành công</returns>
+        public bool PerformInterrogation(IEC104Client client)
+        {
+            if (!Enabled || client == null || !client.IsReadyForDataTransfer)
+            {
+                LastInterrogationSuccess = false;
+                return false;
+            }
+
+            try
+            {
+                // Gửi General Interrogation
+                int result = client.SendGeneralInterrogation(CommonAddress, (byte)InterrogationType);
+
+                LastInterrogationTime = DateTime.Now;
+                LastInterrogationSuccess = (result == IEC104Constants.RESULT_OK);
+
+                if (LastInterrogationSuccess)
+                {
+                    // Đợi một chút để nhận data response
+                    System.Threading.Thread.Sleep(100);
+
+                    // Receive spontaneous data để lấy kết quả interrogation
+                    List<InformationObject> receivedObjects;
+                    int receiveResult = client.ReceiveSpontaneousData(out receivedObjects);
+
+                    if (receiveResult == IEC104Constants.RESULT_OK && receivedObjects != null)
+                    {
+                        ProcessReceivedData(receivedObjects);
+                    }
+                }
+
+                return LastInterrogationSuccess;
+            }
+            catch
+            {
+                LastInterrogationSuccess = false;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Xử lý data nhận được từ interrogation
+        /// </summary>
+        /// <param name="informationObjects">Danh sách Information Objects</param>
+        public void ProcessReceivedData(List<InformationObject> informationObjects)
+        {
+            if (informationObjects == null)
+                return;
+
+            foreach (var infoObj in informationObjects)
+            {
+                // Chỉ lưu những objects pass qua filter
+                if (PassesFilter(infoObj))
+                {
+                    DataCache[infoObj.InformationObjectAddress] = infoObj;
+                }
+            }
+        }
+
+        #endregion
+
+        #region DATA ACCESS METHODS
+
+        /// <summary>
+        /// Lấy Information Object theo IOA
+        /// </summary>
+        /// <param name="ioa">Information Object Address</param>
+        /// <returns>Information Object hoặc null</returns>
+        public InformationObject GetInformationObject(uint ioa)
+        {
+            return DataCache.TryGetValue(ioa, out InformationObject infoObj) ? infoObj : null;
+        }
+
+        /// <summary>
+        /// Kiểm tra IOA có tồn tại trong cache không
+        /// </summary>
+        /// <param name="ioa">Information Object Address</param>
+        /// <returns>True nếu tồn tại</returns>
+        public bool ContainsIOA(uint ioa)
+        {
+            return DataCache.ContainsKey(ioa);
+        }
+
+        /// <summary>
+        /// Lấy tất cả Information Objects theo TypeID
+        /// </summary>
+        /// <param name="typeId">Type ID</param>
+        /// <returns>Danh sách Information Objects</returns>
+        public List<InformationObject> GetObjectsByTypeID(byte typeId)
+        {
+            return DataCache.Values.Where(obj => obj.TypeID == typeId).ToList();
+        }
+
+        /// <summary>
+        /// Lấy tất cả IOAs trong cache
+        /// </summary>
+        /// <returns>Danh sách IOAs</returns>
+        public List<uint> GetAllIOAs()
+        {
+            return DataCache.Keys.ToList();
+        }
+
+        /// <summary>
+        /// Clear cache data
+        /// </summary>
+        public void ClearCache()
+        {
+            DataCache.Clear();
+        }
+
+        #endregion
+
+        #region VALIDATION AND STATUS
+
+        /// <summary>
+        /// Kiểm tra block có cần interrogation không
+        /// </summary>
+        /// <param name="maxInterval">Interval tối đa (seconds)</param>
+        /// <returns>True nếu cần interrogation</returns>
+        public bool NeedsInterrogation(int maxInterval = 300)
+        {
+            if (!Enabled || !LastInterrogationSuccess)
+                return true;
+
+            var elapsed = DateTime.Now - LastInterrogationTime;
+            return elapsed.TotalSeconds >= maxInterval;
+        }
+
+        /// <summary>
+        /// Validate block configuration
+        /// </summary>
+        /// <param name="errorMessage">Error message nếu có</param>
+        /// <returns>True nếu valid</returns>
+        public bool Validate(out string errorMessage)
+        {
+            errorMessage = "";
+
+            if (CommonAddress == 0 || CommonAddress > 65535)
+            {
+                errorMessage = "Common Address phải từ 1-65535";
+                IsValid = false;
+                return false;
+            }
+
+            if (!Enum.IsDefined(typeof(InterrogationType), InterrogationType))
+            {
+                errorMessage = "Interrogation Type không hợp lệ";
+                IsValid = false;
+                return false;
+            }
+
+            if (InterrogationTimeout <= 0 || InterrogationTimeout > 300)
+            {
+                errorMessage = "Interrogation Timeout phải từ 1-300 seconds";
+                IsValid = false;
+                return false;
+            }
+
+            IsValid = true;
+            return true;
+        }
+
+        /// <summary>
+        /// Lấy thống kê của block
+        /// </summary>
+        /// <returns>Statistics string</returns>
+        public string GetStatistics()
+        {
+            var stats = new List<string>();
+            stats.Add($"CA: {CommonAddress}");
+            stats.Add($"Type: {InterrogationType}");
+            stats.Add($"Objects: {ReceivedObjectCount}");
+            stats.Add($"Filters: IOA({FilteredIOAs.Count}), TypeID({FilteredTypeIDs.Count})");
+            stats.Add($"Last: {LastInterrogationTime:HH:mm:ss}");
+            stats.Add($"Success: {LastInterrogationSuccess}");
+
+            return string.Join(", ", stats);
+        }
+
+        #endregion
+
+        #region STATIC FACTORY METHODS
+
+        /// <summary>
+        /// Tạo block readers từ cấu hình string
+        /// Format: CA-InterrogationType-IOAFrom-IOATo/TypeIDs/Enabled
+        /// Example: "1-20-1-1000/1,3,9/true"
+        /// </summary>
+        /// <param name="blockSetting">Block setting string</param>
+        /// <returns>Block reader hoặc null nếu lỗi</returns>
+        public static IEC104BlockReader Initialize(string blockSetting)
+        {
+            if (string.IsNullOrWhiteSpace(blockSetting))
+                return null;
+
+            try
+            {
+                var parts = blockSetting.Split('/');
+                if (parts.Length < 1) return null;
+
+                // Parse main part: CA-InterrogationType-IOAFrom-IOATo
+                var mainParts = parts[0].Split('-');
+                if (mainParts.Length < 2) return null;
+
+                // Parse Common Address
+                if (!ushort.TryParse(mainParts[0], out ushort commonAddress) || commonAddress == 0)
+                    return null;
+
+                // Parse Interrogation Type
+                if (!byte.TryParse(mainParts[1], out byte intType))
+                    return null;
+
+                var interrogationType = (InterrogationType)intType;
+                if (!Enum.IsDefined(typeof(InterrogationType), interrogationType))
+                    return null;
+
+                // Tạo block reader
+                var blockReader = new IEC104BlockReader(commonAddress, interrogationType);
+
+                // Parse IOA range if provided
+                if (mainParts.Length >= 4)
+                {
+                    if (uint.TryParse(mainParts[2], out uint ioaFrom) &&
+                        uint.TryParse(mainParts[3], out uint ioaTo))
+                    {
+                        blockReader.AddIOARange(ioaFrom, ioaTo);
+                    }
+                }
+
+                // Parse TypeID filters if provided
+                if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+                {
+                    var typeIds = parts[1].Split(',');
+                    foreach (var typeIdStr in typeIds)
+                    {
+                        if (byte.TryParse(typeIdStr.Trim(), out byte typeId))
+                        {
+                            blockReader.AddTypeIDFilter(typeId);
+                        }
+                    }
+                }
+
+                // Parse Enabled flag if provided
+                if (parts.Length >= 3 && !string.IsNullOrWhiteSpace(parts[2]))
+                {
+                    if (bool.TryParse(parts[2].Trim(), out bool enabled))
+                    {
+                        blockReader.Enabled = enabled;
+                    }
+                }
+
+                // Validate
+                if (blockReader.Validate(out string errorMessage))
+                {
+                    return blockReader;
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Tạo multiple block readers từ settings string
+        /// Format: "block1|block2|block3"
+        /// </summary>
+        /// <param name="blockSettings">Block settings string</param>
+        /// <returns>Danh sách block readers</returns>
+        public static List<IEC104BlockReader> InitializeMultiple(string blockSettings)
+        {
+            var blockReaders = new List<IEC104BlockReader>();
+
+            if (string.IsNullOrWhiteSpace(blockSettings))
+                return blockReaders;
+
+            var blocks = blockSettings.Split('|');
+            foreach (var blockSetting in blocks)
+            {
+                var blockReader = Initialize(blockSetting.Trim());
+                if (blockReader != null)
+                {
+                    blockReaders.Add(blockReader);
+                }
+            }
+
+            return blockReaders;
+        }
+
+        /// <summary>
+        /// Tạo default block reader cho station interrogation
+        /// </summary>
+        /// <param name="commonAddress">Common Address</param>
+        /// <returns>Default block reader</returns>
+        public static IEC104BlockReader CreateDefault(ushort commonAddress)
+        {
+            return new IEC104BlockReader(commonAddress, InterrogationType.Station)
+            {
+                BlockName = $"Default-CA{commonAddress}",
+                Enabled = true
+            };
+        }
+
+        #endregion
+
+        #region OVERRIDE METHODS
+
+        /// <summary>
+        /// Override ToString
+        /// </summary>
+        /// <returns>String representation</returns>
+        public override string ToString()
+        {
+            return $"IEC104BlockReader: {BlockName ?? "Unnamed"} - {GetStatistics()}";
+        }
+
+        /// <summary>
+        /// Override Equals
+        /// </summary>
+        /// <param name="obj">Object to compare</param>
+        /// <returns>True if equal</returns>
+        public override bool Equals(object obj)
+        {
+            if (obj is IEC104BlockReader other)
+            {
+                return CommonAddress == other.CommonAddress &&
+                       InterrogationType == other.InterrogationType;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Override GetHashCode
+        /// </summary>
+        /// <returns>Hash code</returns>
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(CommonAddress, InterrogationType);
+        }
+
         #endregion
     }
-
-    /// <summary>
-    /// IOA Range
-    /// </summary>
-    public class IOARange
-    {
-        public uint StartIOA { get; set; }
-        public uint EndIOA { get; set; }
-
-        public uint Count => EndIOA >= StartIOA ? EndIOA - StartIOA + 1 : 0;
-
-        public override string ToString()
-        {
-            return $"{StartIOA}-{EndIOA} ({Count} IOAs)";
-        }
-    }
-
-    /// <summary>
-    /// Chiến lược đọc block
-    /// </summary>
-    public enum BlockReadStrategy
-    {
-        /// <summary>Sử dụng Interrogation</summary>
-        Interrogation,
-
-        /// <summary>Xử lý dữ liệu tự phát</summary>
-        SpontaneousData,
-
-        /// <summary>Đọc các IOA cụ thể</summary>
-        SpecificIOAs,
-
-        /// <summary>Kết hợp các phương pháp</summary>
-        Cyclic
-    }
-
-    /// <summary>
-    /// Thống kê Block Reader
-    /// </summary>
-    public class BlockStatistics
-    {
-        public string BlockName { get; set; }
-        public bool Enabled { get; set; }
-        public bool IsRunning { get; set; }
-        public int ReadInterval { get; set; }
-        public ushort CommonAddress { get; set; }
-        public InterrogationType InterrogationType { get; set; }
-        public BlockReadStrategy ReadStrategy { get; set; }
-
-        public int ReadCount { get; set; }
-        public int SuccessfulReadCount { get; set; }
-        public int ErrorCount { get; set; }
-        public double SuccessRate { get; set; }
-
-        public DateTime LastReadTime { get; set; }
-        public DateTime LastSuccessfulReadTime { get; set; }
-        public string LastError { get; set; }
-
-        public int IOARangesCount { get; set; }
-        public int TypeIDFiltersCount { get; set; }
-        public int LastDataObjectsCount { get; set; }
-
-        public List<IOARange> IOARanges { get; set; }
-        public List<byte> TypeIDFilters { get; set; }
-
-        public override string ToString()
-        {
-            return $"Block[{BlockName}] CA:{CommonAddress} | Strategy:{ReadStrategy} | " +
-                   $"Success:{SuccessfulReadCount}/{ReadCount} ({SuccessRate:F1}%) | " +
-                   $"IOAs:{IOARangesCount} ranges, TypeIDs:{TypeIDFiltersCount} filters | " +
-                   $"LastData:{LastDataObjectsCount} objects";
-        }
-    }
-    #endregion
 }

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using IEC104;
+using ModbusIEC104.Common;
 
 namespace ModbusIEC104
 {
@@ -183,18 +185,7 @@ namespace ModbusIEC104
                 return false;
             }
         }
-        public List<InformationObject> GetAllLastReadData()
-        {
-            var allData = new List<InformationObject>();
-            lock (lockObject)
-            {
-                foreach (var blockReader in blockReaders)
-                {
-                    allData.AddRange(blockReader.GetLastReadData());
-                }
-            }
-            return allData;
-        }
+
         public bool SendInterrogation(InterrogationType type = InterrogationType.General)
         {
             try

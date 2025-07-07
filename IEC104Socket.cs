@@ -1,505 +1,646 @@
 ﻿using System;
-using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
-namespace ModbusIEC104
+namespace IEC104
 {
     /// <summary>
-    /// Quản lý socket TCP cho kết nối IEC104
+    /// Trạng thái kết nối IEC104
     /// </summary>
-    public class IEC104Socket : IDisposable
+    public enum IEC104ConnectionState
+    {
+        /// <summary>Không kết nối</summary>
+        Disconnected = 0,
+        /// <summary>Đang kết nối TCP</summary>
+        Connecting = 1,
+        /// <summary>TCP đã kết nối, chưa STARTDT</summary>
+        Connected = 2,
+        /// <summary>Đang gửi STARTDT</summary>
+        StartingDataTransfer = 3,
+        /// <summary>STARTDT thành công, sẵn sàng truyền dữ liệu</summary>
+        DataTransferStarted = 4,
+        /// <summary>Đang dừng truyền dữ liệu</summary>
+        StoppingDataTransfer = 5,
+        /// <summary>Lỗi kết nối</summary>
+        Error = 6
+    }
+
+    /// <summary>
+    /// Lớp xử lý kết nối TCP cho giao thức IEC104 - tương tự ModbusSocket
+    /// </summary>
+    public class IEC104Socket
     {
         #region FIELDS
-        private TcpClient tcpClient;
-        private NetworkStream networkStream;
+
+        private Socket socket;
+        private int lastError;
         private readonly object lockObject = new object();
-        private bool isDisposed = false;
-        private Timer keepAliveTimer;
+
         #endregion
 
         #region PROPERTIES
-        /// <summary>Địa chỉ IP của server</summary>
-        public string IpAddress { get; private set; }
 
-        /// <summary>Cổng kết nối</summary>
-        public int Port { get; private set; }
+        /// <summary>Trạng thái kết nối TCP</summary>
+        public bool Connected => socket != null && socket.Connected;
 
-        /// <summary>Timeout cho kết nối (ms)</summary>
-        public int ConnectionTimeout { get; set; } = IEC104Constants.DEFAULT_CONNECTION_TIMEOUT;
+        /// <summary>Trạng thái kết nối IEC104</summary>
+        public IEC104ConnectionState State { get; private set; } = IEC104ConnectionState.Disconnected;
 
-        /// <summary>Timeout cho đọc dữ liệu (ms)</summary>
-        public int ReadTimeout { get; set; } = IEC104Constants.DEFAULT_READ_TIMEOUT;
+        /// <summary>Timeout cho việc nhận dữ liệu (ms)</summary>
+        public int ReceiveTimeout { get; set; } = 10000;
 
-        /// <summary>Timeout cho ghi dữ liệu (ms)</summary>
-        public int WriteTimeout { get; set; } = IEC104Constants.DEFAULT_READ_TIMEOUT;
+        /// <summary>Timeout cho việc gửi dữ liệu (ms)</summary>
+        public int SendTimeout { get; set; } = 10000;
 
-        /// <summary>Kiểm tra trạng thái kết nối</summary>
-        public bool Connected
-        {
-            get
-            {
-                lock (lockObject)
-                {
-                    return tcpClient?.Connected == true && networkStream != null;
-                }
-            }
-        }
+        /// <summary>Timeout cho việc kết nối (ms)</summary>
+        public int ConnectTimeout { get; set; } = 30000;
 
-        /// <summary>Số bytes có sẵn để đọc</summary>
-        public int Available
-        {
-            get
-            {
-                lock (lockObject)
-                {
-                    return tcpClient?.Available ?? 0;
-                }
-            }
-        }
+        /// <summary>Lỗi cuối cùng</summary>
+        public int LastError => lastError;
 
-        /// <summary>Endpoint local của kết nối</summary>
-        public EndPoint LocalEndPoint
-        {
-            get
-            {
-                lock (lockObject)
-                {
-                    return tcpClient?.Client?.LocalEndPoint;
-                }
-            }
-        }
-
-        /// <summary>Endpoint remote của kết nối</summary>
-        public EndPoint RemoteEndPoint
-        {
-            get
-            {
-                lock (lockObject)
-                {
-                    return tcpClient?.Client?.RemoteEndPoint;
-                }
-            }
-        }
-
-        /// <summary>Thời gian kết nối cuối</summary>
-        public DateTime LastConnectTime { get; private set; }
-
-        /// <summary>Thời gian gửi dữ liệu cuối</summary>
-        public DateTime LastSendTime { get; private set; }
-
-        /// <summary>Thời gian nhận dữ liệu cuối</summary>
-        public DateTime LastReceiveTime { get; private set; }
         #endregion
 
         #region CONSTRUCTORS
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="ipAddress">Địa chỉ IP</param>
-        /// <param name="port">Cổng kết nối</param>
-        public IEC104Socket(string ipAddress, int port)
-        {
-            IpAddress = ipAddress ?? throw new ArgumentNullException(nameof(ipAddress));
-            Port = port;
 
-            if (port <= 0 || port > 65535)
-                throw new ArgumentOutOfRangeException(nameof(port), "Port must be between 1 and 65535");
+        /// <summary>
+        /// Constructor mặc định
+        /// </summary>
+        public IEC104Socket()
+        {
         }
+
+        /// <summary>
+        /// Destructor
+        /// </summary>
+        ~IEC104Socket()
+        {
+            Close();
+        }
+
         #endregion
 
         #region CONNECTION METHODS
-        /// <summary>
-        /// Kết nối đến server
-        /// </summary>
-        /// <returns>True nếu kết nối thành công</returns>
-        public bool Connect()
-        {
-            try
-            {
-                lock (lockObject)
-                {
-                    if (Connected)
-                        return true;
-
-                    // Đóng kết nối cũ nếu có
-                    CloseInternal();
-
-                    // Tạo kết nối mới
-                    tcpClient = new TcpClient();
-
-                    // Thiết lập timeout
-                    tcpClient.ReceiveTimeout = ReadTimeout;
-                    tcpClient.SendTimeout = WriteTimeout;
-
-                    // Thiết lập socket options
-                    tcpClient.NoDelay = true; // Disable Nagle algorithm for real-time communication
-                    tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-
-                    // Kết nối với timeout
-                    var result = tcpClient.BeginConnect(IpAddress, Port, null, null);
-                    var success = result.AsyncWaitHandle.WaitOne(ConnectionTimeout);
-
-                    if (!success)
-                    {
-                        tcpClient.Close();
-                        tcpClient = null;
-                        return false;
-                    }
-
-                    tcpClient.EndConnect(result);
-
-                    // Lấy network stream
-                    networkStream = tcpClient.GetStream();
-                    networkStream.ReadTimeout = ReadTimeout;
-                    networkStream.WriteTimeout = WriteTimeout;
-
-                    LastConnectTime = DateTime.Now;
-
-                    // Khởi động keep-alive timer
-                    StartKeepAliveTimer();
-
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.Connect error: {ex.Message}");
-                CloseInternal();
-                return false;
-            }
-        }
 
         /// <summary>
-        /// Đóng kết nối
+        /// Đóng kết nối socket
         /// </summary>
         public void Close()
         {
             lock (lockObject)
             {
-                CloseInternal();
-            }
-        }
-
-        /// <summary>
-        /// Đóng kết nối (internal method không lock)
-        /// </summary>
-        private void CloseInternal()
-        {
-            try
-            {
-                // Dừng keep-alive timer
-                keepAliveTimer?.Dispose();
-                keepAliveTimer = null;
-
-                // Đóng network stream
-                networkStream?.Close();
-                networkStream?.Dispose();
-                networkStream = null;
-
-                // Đóng TCP client
-                tcpClient?.Close();
-                tcpClient?.Dispose();
-                tcpClient = null;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.CloseInternal error: {ex.Message}");
-            }
-        }
-        #endregion
-
-        #region SEND/RECEIVE METHODS
-        /// <summary>
-        /// Gửi dữ liệu
-        /// </summary>
-        /// <param name="data">Dữ liệu cần gửi</param>
-        /// <returns>Số bytes đã gửi</returns>
-        public int Send(byte[] data)
-        {
-            if (data == null || data.Length == 0)
-                return 0;
-
-            try
-            {
-                lock (lockObject)
+                try
                 {
-                    if (!Connected)
-                        throw new InvalidOperationException("Socket is not connected");
-
-                    networkStream.Write(data, 0, data.Length);
-                    networkStream.Flush();
-
-                    LastSendTime = DateTime.Now;
-                    return data.Length;
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.Send error: {ex.Message}");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Nhận dữ liệu
-        /// </summary>
-        /// <param name="buffer">Buffer để chứa dữ liệu</param>
-        /// <param name="offset">Vị trí bắt đầu trong buffer</param>
-        /// <param name="size">Số bytes tối đa cần đọc</param>
-        /// <returns>Số bytes đã đọc</returns>
-        public int Receive(byte[] buffer, int offset, int size)
-        {
-            if (buffer == null)
-                throw new ArgumentNullException(nameof(buffer));
-
-            if (offset < 0 || size <= 0 || offset + size > buffer.Length)
-                throw new ArgumentOutOfRangeException("Invalid offset or size");
-
-            try
-            {
-                lock (lockObject)
-                {
-                    if (!Connected)
-                        throw new InvalidOperationException("Socket is not connected");
-
-                    var bytesRead = networkStream.Read(buffer, offset, size);
-
-                    if (bytesRead > 0)
-                        LastReceiveTime = DateTime.Now;
-
-                    return bytesRead;
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.Receive error: {ex.Message}");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Nhận đúng số bytes yêu cầu
-        /// </summary>
-        /// <param name="buffer">Buffer để chứa dữ liệu</param>
-        /// <param name="offset">Vị trí bắt đầu trong buffer</param>
-        /// <param name="size">Số bytes cần đọc</param>
-        /// <param name="timeout">Timeout (ms)</param>
-        /// <returns>True nếu đọc đủ số bytes</returns>
-        public bool ReceiveExact(byte[] buffer, int offset, int size, int timeout = 0)
-        {
-            if (buffer == null)
-                throw new ArgumentNullException(nameof(buffer));
-
-            if (offset < 0 || size <= 0 || offset + size > buffer.Length)
-                throw new ArgumentOutOfRangeException("Invalid offset or size");
-
-            var timeoutToUse = timeout > 0 ? timeout : ReadTimeout;
-            var startTime = DateTime.Now;
-            var totalBytesRead = 0;
-
-            try
-            {
-                while (totalBytesRead < size)
-                {
-                    // Kiểm tra timeout
-                    if ((DateTime.Now - startTime).TotalMilliseconds > timeoutToUse)
-                        return false;
-
-                    lock (lockObject)
+                    if (socket != null)
                     {
-                        if (!Connected)
-                            return false;
-
-                        // Kiểm tra dữ liệu có sẵn
-                        if (networkStream.DataAvailable || totalBytesRead == 0)
+                        if (socket.Connected)
                         {
-                            var bytesRead = networkStream.Read(buffer, offset + totalBytesRead, size - totalBytesRead);
-
-                            if (bytesRead == 0)
-                                return false; // Connection closed
-
-                            totalBytesRead += bytesRead;
-
-                            if (totalBytesRead > 0)
-                                LastReceiveTime = DateTime.Now;
+                            socket.Shutdown(SocketShutdown.Both);
                         }
-                        else
-                        {
-                            // Chờ một chút trước khi thử lại
-                            Thread.Sleep(1);
-                        }
+                        socket.Close();
+                        socket.Dispose();
+                        socket = null;
                     }
                 }
-
-                return totalBytesRead == size;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.ReceiveExact error: {ex.Message}");
-                return false;
-            }
-        }
-        #endregion
-
-        #region KEEP-ALIVE METHODS
-        /// <summary>
-        /// Khởi động keep-alive timer
-        /// </summary>
-        private void StartKeepAliveTimer()
-        {
-            try
-            {
-                // Timer kiểm tra kết nối mỗi 30 giây
-                keepAliveTimer = new Timer(KeepAliveCallback, null, 30000, 30000);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.StartKeepAliveTimer error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Callback cho keep-alive timer
-        /// </summary>
-        /// <param name="state">Timer state</param>
-        private void KeepAliveCallback(object state)
-        {
-            try
-            {
-                lock (lockObject)
+                catch
                 {
-                    if (!Connected)
-                        return;
-
-                    // Kiểm tra xem có activity gần đây không
-                    var now = DateTime.Now;
-                    var timeSinceLastActivity = now - Math.Max(LastSendTime, LastReceiveTime);
-
-                    // Nếu không có activity trong 60 giây, thử ping socket
-                    if (timeSinceLastActivity.TotalSeconds > 60)
-                    {
-                        if (!IsSocketConnected())
-                        {
-                            CloseInternal();
-                        }
-                    }
+                    // Ignore exceptions during close
+                }
+                finally
+                {
+                    State = IEC104ConnectionState.Disconnected;
                 }
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"IEC104Socket.KeepAliveCallback error: {ex.Message}");
-            }
         }
 
         /// <summary>
-        /// Kiểm tra socket có thực sự kết nối không
+        /// Tạo socket mới
         /// </summary>
-        /// <returns>True nếu socket còn kết nối</returns>
-        private bool IsSocketConnected()
+        private void CreateSocket()
         {
+            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            socket.NoDelay = true; // Disable Nagle's algorithm for real-time communication
+            socket.ReceiveTimeout = ReceiveTimeout;
+            socket.SendTimeout = SendTimeout;
+        }
+
+        /// <summary>
+        /// Ping TCP để kiểm tra kết nối
+        /// </summary>
+        /// <param name="host">Địa chỉ IP hoặc hostname</param>
+        /// <param name="port">Port</param>
+        private void TCPPing(string host, int port)
+        {
+            lastError = IEC104Constants.RESULT_OK;
+            Socket pingSocket = null;
+
             try
             {
-                if (tcpClient?.Client == null)
-                    return false;
+                pingSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                IAsyncResult result = pingSocket.BeginConnect(host, port, null, null);
+                bool success = result.AsyncWaitHandle.WaitOne(ConnectTimeout, true);
 
-                var socket = tcpClient.Client;
-
-                // Sử dụng Poll để kiểm tra trạng thái
-                return !(socket.Poll(1, SelectMode.SelectRead) && socket.Available == 0);
+                if (!success)
+                {
+                    lastError = IEC104Constants.ERR_CONNECTION_TIMEOUT;
+                }
+                else
+                {
+                    pingSocket.EndConnect(result);
+                }
+            }
+            catch (SocketException ex)
+            {
+                lastError = IEC104Constants.ERR_CONNECTION_FAILED;
             }
             catch
             {
-                return false;
+                lastError = IEC104Constants.ERR_CONNECTION_FAILED;
             }
-        }
-        #endregion
-
-        #region STATUS METHODS
-        /// <summary>
-        /// Lấy thông tin trạng thái socket
-        /// </summary>
-        /// <returns>Thông tin trạng thái</returns>
-        public string GetStatusInfo()
-        {
-            lock (lockObject)
+            finally
             {
-                if (!Connected)
-                    return "Disconnected";
-
-                return $"Connected to {RemoteEndPoint} | " +
-                       $"Last Send: {LastSendTime:HH:mm:ss} | " +
-                       $"Last Receive: {LastReceiveTime:HH:mm:ss} | " +
-                       $"Available: {Available} bytes";
-            }
-        }
-
-        /// <summary>
-        /// Lấy thống kê kết nối
-        /// </summary>
-        /// <returns>Thống kê kết nối</returns>
-        public SocketStatistics GetStatistics()
-        {
-            lock (lockObject)
-            {
-                return new SocketStatistics
+                try
                 {
-                    IsConnected = Connected,
-                    LocalEndPoint = LocalEndPoint?.ToString(),
-                    RemoteEndPoint = RemoteEndPoint?.ToString(),
-                    LastConnectTime = LastConnectTime,
-                    LastSendTime = LastSendTime,
-                    LastReceiveTime = LastReceiveTime,
-                    AvailableBytes = Available,
-                    ConnectionTimeout = ConnectionTimeout,
-                    ReadTimeout = ReadTimeout,
-                    WriteTimeout = WriteTimeout
-                };
+                    pingSocket?.Close();
+                    pingSocket?.Dispose();
+                }
+                catch { }
             }
         }
-        #endregion
 
-        #region DISPOSE
         /// <summary>
-        /// Dispose socket
+        /// Kết nối TCP đến server IEC104
         /// </summary>
-        public void Dispose()
+        /// <param name="host">Địa chỉ IP hoặc hostname</param>
+        /// <param name="port">Port (mặc định 2404)</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int Connect(string host, int port = IEC104Constants.DEFAULT_PORT)
         {
-            if (!isDisposed)
+            lastError = IEC104Constants.RESULT_OK;
+
+            if (Connected)
             {
-                Close();
-                isDisposed = true;
+                return lastError; // Already connected
+            }
+
+            lock (lockObject)
+            {
+                try
+                {
+                    State = IEC104ConnectionState.Connecting;
+
+                    // Ping trước để kiểm tra
+                    TCPPing(host, port);
+                    if (lastError != IEC104Constants.RESULT_OK)
+                    {
+                        State = IEC104ConnectionState.Error;
+                        return lastError;
+                    }
+
+                    // Tạo socket và kết nối
+                    CreateSocket();
+
+                    IAsyncResult result = socket.BeginConnect(host, port, null, null);
+                    bool success = result.AsyncWaitHandle.WaitOne(ConnectTimeout, true);
+
+                    if (success && socket.Connected)
+                    {
+                        socket.EndConnect(result);
+                        State = IEC104ConnectionState.Connected;
+                    }
+                    else
+                    {
+                        Close();
+                        lastError = IEC104Constants.ERR_CONNECTION_FAILED;
+                        State = IEC104ConnectionState.Error;
+                    }
+                }
+                catch (SocketException ex)
+                {
+                    Close();
+                    lastError = IEC104Constants.ERR_CONNECTION_FAILED;
+                    State = IEC104ConnectionState.Error;
+                }
+                catch
+                {
+                    Close();
+                    lastError = IEC104Constants.ERR_CONNECTION_FAILED;
+                    State = IEC104ConnectionState.Error;
+                }
+            }
+
+            return lastError;
+        }
+
+        #endregion
+
+        #region DATA TRANSFER METHODS
+
+        /// <summary>
+        /// Gửi dữ liệu qua socket
+        /// </summary>
+        /// <param name="buffer">Buffer chứa dữ liệu</param>
+        /// <param name="offset">Vị trí bắt đầu trong buffer</param>
+        /// <param name="size">Số bytes cần gửi</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int Send(byte[] buffer, int offset, int size)
+        {
+            if (!Connected)
+            {
+                return IEC104Constants.ERR_NOT_CONNECTED;
+            }
+
+            int startTickCount = Environment.TickCount;
+            int sent = 0;
+
+            lock (lockObject)
+            {
+                try
+                {
+                    do
+                    {
+                        if (socket == null || !socket.Connected)
+                        {
+                            return IEC104Constants.ERR_NOT_CONNECTED;
+                        }
+
+                        if (Environment.TickCount > startTickCount + SendTimeout)
+                        {
+                            return IEC104Constants.ERR_SEND_TIMEOUT;
+                        }
+
+                        try
+                        {
+                            int bytesSent = socket.Send(buffer, offset + sent, size - sent, SocketFlags.None);
+                            sent += bytesSent;
+                        }
+                        catch (SocketException ex)
+                        {
+                            if (ex.SocketErrorCode == SocketError.WouldBlock ||
+                                ex.SocketErrorCode == SocketError.IOPending ||
+                                ex.SocketErrorCode == SocketError.NoBufferSpaceAvailable)
+                            {
+                                Thread.Sleep(10); // Wait a bit and retry
+                            }
+                            else
+                            {
+                                return IEC104Constants.ERR_CONNECTION_FAILED;
+                            }
+                        }
+                    } while (sent < size);
+                }
+                catch
+                {
+                    return IEC104Constants.ERR_CONNECTION_FAILED;
+                }
+            }
+
+            return IEC104Constants.RESULT_OK;
+        }
+
+        /// <summary>
+        /// Nhận dữ liệu từ socket
+        /// </summary>
+        /// <param name="buffer">Buffer để chứa dữ liệu nhận được</param>
+        /// <param name="offset">Vị trí bắt đầu trong buffer</param>
+        /// <param name="size">Số bytes cần nhận</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int Receive(byte[] buffer, int offset, int size)
+        {
+            if (!Connected)
+            {
+                return IEC104Constants.ERR_NOT_CONNECTED;
+            }
+
+            int startTickCount = Environment.TickCount;
+            int received = 0;
+
+            lock (lockObject)
+            {
+                try
+                {
+                    do
+                    {
+                        if (socket == null || !socket.Connected)
+                        {
+                            return IEC104Constants.ERR_NOT_CONNECTED;
+                        }
+
+                        if (Environment.TickCount > startTickCount + ReceiveTimeout)
+                        {
+                            return IEC104Constants.ERR_RECEIVE_TIMEOUT;
+                        }
+
+                        try
+                        {
+                            int bytesReceived = socket.Receive(buffer, offset + received, size - received, SocketFlags.None);
+                            if (bytesReceived == 0)
+                            {
+                                // Connection closed by remote
+                                return IEC104Constants.ERR_CONNECTION_FAILED;
+                            }
+                            received += bytesReceived;
+                        }
+                        catch (SocketException ex)
+                        {
+                            if (ex.SocketErrorCode == SocketError.WouldBlock ||
+                                ex.SocketErrorCode == SocketError.IOPending ||
+                                ex.SocketErrorCode == SocketError.NoBufferSpaceAvailable)
+                            {
+                                Thread.Sleep(10); // Wait a bit and retry
+                            }
+                            else
+                            {
+                                return IEC104Constants.ERR_CONNECTION_FAILED;
+                            }
+                        }
+                    } while (received < size);
+                }
+                catch
+                {
+                    return IEC104Constants.ERR_CONNECTION_FAILED;
+                }
+            }
+
+            return IEC104Constants.RESULT_OK;
+        }
+
+        /// <summary>
+        /// Nhận frame IEC104 hoàn chỉnh
+        /// </summary>
+        /// <param name="buffer">Buffer để chứa frame</param>
+        /// <param name="maxSize">Kích thước tối đa của buffer</param>
+        /// <param name="frameLength">Độ dài frame thực tế nhận được</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int ReceiveFrame(byte[] buffer, int maxSize, out int frameLength)
+        {
+            frameLength = 0;
+
+            if (!Connected)
+            {
+                return IEC104Constants.ERR_NOT_CONNECTED;
+            }
+
+            try
+            {
+                // Đọc start byte và length
+                int result = Receive(buffer, 0, 2);
+                if (result != IEC104Constants.RESULT_OK)
+                {
+                    return result;
+                }
+
+                // Kiểm tra start byte
+                if (buffer[0] != IEC104Constants.START_BYTE)
+                {
+                    return IEC104Constants.ERR_INVALID_FRAME;
+                }
+
+                // Lấy APDU length
+                byte apduLength = buffer[1];
+                if (apduLength > IEC104Constants.MAX_APDU_LENGTH || 2 + apduLength > maxSize)
+                {
+                    return IEC104Constants.ERR_INVALID_FRAME;
+                }
+
+                // Đọc phần còn lại của frame
+                if (apduLength > 0)
+                {
+                    result = Receive(buffer, 2, apduLength);
+                    if (result != IEC104Constants.RESULT_OK)
+                    {
+                        return result;
+                    }
+                }
+
+                frameLength = 2 + apduLength;
+                return IEC104Constants.RESULT_OK;
+            }
+            catch
+            {
+                return IEC104Constants.ERR_CONNECTION_FAILED;
             }
         }
+
         #endregion
-    }
 
-    #region SUPPORTING CLASSES
-    /// <summary>
-    /// Thống kê socket
-    /// </summary>
-    public class SocketStatistics
-    {
-        public bool IsConnected { get; set; }
-        public string LocalEndPoint { get; set; }
-        public string RemoteEndPoint { get; set; }
-        public DateTime LastConnectTime { get; set; }
-        public DateTime LastSendTime { get; set; }
-        public DateTime LastReceiveTime { get; set; }
-        public int AvailableBytes { get; set; }
-        public int ConnectionTimeout { get; set; }
-        public int ReadTimeout { get; set; }
-        public int WriteTimeout { get; set; }
+        #region IEC104 PROTOCOL METHODS
 
+        /// <summary>
+        /// Gửi U-frame
+        /// </summary>
+        /// <param name="function">Chức năng U-frame</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int SendUFrame(UFrameFunction function)
+        {
+            var frame = IEC104Frame.CreateUFrame(function);
+            if (frame == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            byte[] frameData = frame.ToByteArray();
+            if (frameData == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            return Send(frameData, 0, frameData.Length);
+        }
+
+        /// <summary>
+        /// Gửi S-frame (Supervisory frame)
+        /// </summary>
+        /// <param name="receiveSequenceNumber">Receive sequence number</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int SendSFrame(ushort receiveSequenceNumber)
+        {
+            var frame = IEC104Frame.CreateSFrame(receiveSequenceNumber);
+            if (frame == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            byte[] frameData = frame.ToByteArray();
+            if (frameData == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            return Send(frameData, 0, frameData.Length);
+        }
+
+        /// <summary>
+        /// Gửi I-frame (Information frame)
+        /// </summary>
+        /// <param name="sendSequenceNumber">Send sequence number</param>
+        /// <param name="receiveSequenceNumber">Receive sequence number</param>
+        /// <param name="asduData">ASDU data</param>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int SendIFrame(ushort sendSequenceNumber, ushort receiveSequenceNumber, byte[] asduData)
+        {
+            var frame = IEC104Frame.CreateIFrame(sendSequenceNumber, receiveSequenceNumber, asduData);
+            if (frame == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            byte[] frameData = frame.ToByteArray();
+            if (frameData == null)
+            {
+                return IEC104Constants.ERR_INVALID_FRAME;
+            }
+
+            return Send(frameData, 0, frameData.Length);
+        }
+
+        /// <summary>
+        /// Bắt đầu truyền dữ liệu (gửi STARTDT)
+        /// </summary>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int StartDataTransfer()
+        {
+            if (State != IEC104ConnectionState.Connected)
+            {
+                return IEC104Constants.ERR_NOT_CONNECTED;
+            }
+
+            State = IEC104ConnectionState.StartingDataTransfer;
+
+            int result = SendUFrame(UFrameFunction.STARTDT_ACT);
+            if (result != IEC104Constants.RESULT_OK)
+            {
+                State = IEC104ConnectionState.Error;
+                return result;
+            }
+
+            // Đợi STARTDT_CON response
+            byte[] buffer = new byte[256];
+            result = ReceiveFrame(buffer, buffer.Length, out int frameLength);
+            if (result != IEC104Constants.RESULT_OK)
+            {
+                State = IEC104ConnectionState.Error;
+                return result;
+            }
+
+            // Parse response frame
+            var responseFrame = IEC104Frame.FromByteArray(buffer);
+            if (responseFrame == null || !responseFrame.IsUFrame(UFrameFunction.STARTDT_CON))
+            {
+                State = IEC104ConnectionState.Error;
+                return IEC104Constants.ERR_STARTDT_FAILED;
+            }
+
+            State = IEC104ConnectionState.DataTransferStarted;
+            return IEC104Constants.RESULT_OK;
+        }
+
+        /// <summary>
+        /// Dừng truyền dữ liệu (gửi STOPDT)
+        /// </summary>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int StopDataTransfer()
+        {
+            if (State != IEC104ConnectionState.DataTransferStarted)
+            {
+                return IEC104Constants.RESULT_OK; // Already stopped
+            }
+
+            State = IEC104ConnectionState.StoppingDataTransfer;
+
+            int result = SendUFrame(UFrameFunction.STOPDT_ACT);
+            if (result != IEC104Constants.RESULT_OK)
+            {
+                State = IEC104ConnectionState.Error;
+                return result;
+            }
+
+            // Đợi STOPDT_CON response (tùy chọn)
+            try
+            {
+                byte[] buffer = new byte[256];
+                result = ReceiveFrame(buffer, buffer.Length, out int frameLength);
+                if (result == IEC104Constants.RESULT_OK)
+                {
+                    var responseFrame = IEC104Frame.FromByteArray(buffer);
+                    // Kiểm tra STOPDT_CON nếu cần
+                }
+            }
+            catch
+            {
+                // Ignore errors when stopping
+            }
+
+            State = IEC104ConnectionState.Connected;
+            return IEC104Constants.RESULT_OK;
+        }
+
+        /// <summary>
+        /// Gửi test frame
+        /// </summary>
+        /// <returns>Mã lỗi (0 = thành công)</returns>
+        public int SendTestFrame()
+        {
+            if (State != IEC104ConnectionState.DataTransferStarted)
+            {
+                return IEC104Constants.ERR_NOT_CONNECTED;
+            }
+
+            int result = SendUFrame(UFrameFunction.TESTFR_ACT);
+            if (result != IEC104Constants.RESULT_OK)
+            {
+                return result;
+            }
+
+            // Đợi TESTFR_CON response
+            byte[] buffer = new byte[256];
+            result = ReceiveFrame(buffer, buffer.Length, out int frameLength);
+            if (result != IEC104Constants.RESULT_OK)
+            {
+                return result;
+            }
+
+            // Parse response frame
+            var responseFrame = IEC104Frame.FromByteArray(buffer);
+            if (responseFrame == null || !responseFrame.IsUFrame(UFrameFunction.TESTFR_CON))
+            {
+                return IEC104Constants.ERR_TESTFR_FAILED;
+            }
+
+            return IEC104Constants.RESULT_OK;
+        }
+
+        #endregion
+
+        #region UTILITY METHODS
+
+        /// <summary>
+        /// Kiểm tra trạng thái kết nối
+        /// </summary>
+        /// <returns>True nếu sẵn sàng truyền dữ liệu</returns>
+        public bool IsReadyForDataTransfer()
+        {
+            return State == IEC104ConnectionState.DataTransferStarted && Connected;
+        }
+
+        /// <summary>
+        /// Reset trạng thái về Disconnected
+        /// </summary>
+        public void Reset()
+        {
+            Close();
+            State = IEC104ConnectionState.Disconnected;
+            lastError = IEC104Constants.RESULT_OK;
+        }
+
+        /// <summary>
+        /// Lấy thông tin socket dưới dạng string để debug
+        /// </summary>
+        /// <returns>String mô tả socket</returns>
         public override string ToString()
         {
-            return $"Socket [{(IsConnected ? "Connected" : "Disconnected")}] " +
-                   $"{LocalEndPoint} -> {RemoteEndPoint} | " +
-                   $"Connect: {LastConnectTime:yyyy-MM-dd HH:mm:ss} | " +
-                   $"Send: {LastSendTime:HH:mm:ss} | " +
-                   $"Receive: {LastReceiveTime:HH:mm:ss} | " +
-                   $"Available: {AvailableBytes} bytes";
+            return $"IEC104Socket: State={State}, Connected={Connected}, LastError={lastError}";
         }
+
+        #endregion
     }
-    #endregion
 }

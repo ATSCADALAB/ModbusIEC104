@@ -1,623 +1,734 @@
 ﻿using System;
+using System.Collections.Generic;
 
-namespace ModbusIEC104.Common
+namespace IEC104
 {
     /// <summary>
-    /// Các loại dữ liệu hỗ trợ trong IEC104
+    /// IEC104 Data Types - hoàn toàn độc lập cho IEC104
+    /// Mapping với TypeID trong IEC104 standard
     /// </summary>
-    public enum DataType
+    public enum IEC104DataType : byte
     {
-        /// <summary>Boolean - 1 bit</summary>
-        Bool = 0,
+        #region MONITORING DIRECTION (READ ONLY)
 
-        /// <summary>Byte - 8 bit unsigned</summary>
-        Byte = 1,
+        /// <summary>Single-point information M_SP_NA_1</summary>
+        SinglePoint = IEC104Constants.M_SP_NA_1,
 
-        /// <summary>SByte - 8 bit signed</summary>
-        SByte = 2,
+        /// <summary>Double-point information M_DP_NA_1</summary>
+        DoublePoint = IEC104Constants.M_DP_NA_1,
 
-        /// <summary>UInt16 - 16 bit unsigned</summary>
-        UInt16 = 3,
+        /// <summary>Step position information M_ST_NA_1</summary>
+        StepPosition = IEC104Constants.M_ST_NA_1,
 
-        /// <summary>Int16 - 16 bit signed</summary>
-        Int16 = 4,
+        /// <summary>Bitstring of 32 bit M_BO_NA_1</summary>
+        Bitstring32 = IEC104Constants.M_BO_NA_1,
 
-        /// <summary>UInt32 - 32 bit unsigned</summary>
-        UInt32 = 5,
+        /// <summary>Measured value, normalized value M_ME_NA_1</summary>
+        NormalizedValue = IEC104Constants.M_ME_NA_1,
 
-        /// <summary>Int32 - 32 bit signed</summary>
-        Int32 = 6,
+        /// <summary>Measured value, scaled value M_ME_NB_1</summary>
+        ScaledValue = IEC104Constants.M_ME_NB_1,
 
-        /// <summary>UInt64 - 64 bit unsigned</summary>
-        UInt64 = 7,
+        /// <summary>Measured value, short floating point M_ME_NC_1</summary>
+        FloatValue = IEC104Constants.M_ME_NC_1,
 
-        /// <summary>Int64 - 64 bit signed</summary>
-        Int64 = 8,
+        /// <summary>Integrated totals M_IT_NA_1</summary>
+        IntegratedTotals = IEC104Constants.M_IT_NA_1,
 
-        /// <summary>Float - 32 bit floating point</summary>
-        Float = 9,
+        #endregion
 
-        /// <summary>Double - 64 bit floating point</summary>
-        Double = 10,
+        #region CONTROL DIRECTION (READ/WRITE)
 
-        /// <summary>String - Variable length string</summary>
-        String = 11,
+        /// <summary>Single command C_SC_NA_1</summary>
+        SingleCommand = IEC104Constants.C_SC_NA_1,
 
-        /// <summary>DateTime - Date and time</summary>
-        DateTime = 12,
+        /// <summary>Double command C_DC_NA_1</summary>
+        DoubleCommand = IEC104Constants.C_DC_NA_1,
 
-        /// <summary>IEC104 Normalized Value (-1.0 to +1.0)</summary>
-        NormalizedValue = 20,
+        /// <summary>Regulating step command C_RC_NA_1</summary>
+        StepCommand = IEC104Constants.C_RC_NA_1,
 
-        /// <summary>IEC104 Scaled Value (with factor)</summary>
-        ScaledValue = 21,
+        /// <summary>Set-point command, normalized value C_SE_NA_1</summary>
+        NormalizedSetpoint = IEC104Constants.C_SE_NA_1,
 
-        /// <summary>IEC104 Single Point (On/Off)</summary>
-        SinglePoint = 22,
+        /// <summary>Set-point command, scaled value C_SE_NB_1</summary>
+        ScaledSetpoint = IEC104Constants.C_SE_NB_1,
 
-        /// <summary>IEC104 Double Point (Off/On/Indeterminate/Invalid)</summary>
-        DoublePoint = 23,
+        /// <summary>Set-point command, short floating point C_SE_NC_1</summary>
+        FloatSetpoint = IEC104Constants.C_SE_NC_1,
 
-        /// <summary>IEC104 Step Position</summary>
-        StepPosition = 24,
+        #endregion
 
-        /// <summary>IEC104 Bitstring 32</summary>
-        Bitstring32 = 25,
+        #region SYSTEM COMMANDS
 
-        /// <summary>IEC104 Integrated Totals</summary>
-        IntegratedTotals = 26,
+        /// <summary>Interrogation command C_IC_NA_1</summary>
+        InterrogationCommand = IEC104Constants.C_IC_NA_1,
 
-        /// <summary>IEC104 CP56Time2a (7 bytes timestamp)</summary>
-        CP56Time2a = 27,
+        /// <summary>Counter interrogation command C_CI_NA_1</summary>
+        CounterInterrogationCommand = IEC104Constants.C_CI_NA_1,
 
-        /// <summary>IEC104 CP24Time2a (3 bytes timestamp)</summary>
-        CP24Time2a = 28,
+        /// <summary>Read command C_RD_NA_1</summary>
+        ReadCommand = IEC104Constants.C_RD_NA_1,
 
-        /// <summary>Quality Descriptor (1 byte)</summary>
-        Quality = 29,
+        /// <summary>Clock synchronization command C_CS_NA_1</summary>
+        ClockSynchronizationCommand = IEC104Constants.C_CS_NA_1,
 
-        /// <summary>Unknown data type</summary>
-        Unknown = 255
+        /// <summary>Reset process command C_RP_NA_1</summary>
+        ResetProcessCommand = IEC104Constants.C_RP_NA_1,
+
+        #endregion
     }
 
     /// <summary>
-    /// Chất lượng dữ liệu IEC104
+    /// Access Right cho IEC104 - hoàn toàn độc lập
     /// </summary>
-    [Flags]
-    public enum Quality : byte
+    public enum IEC104AccessRight
     {
-        /// <summary>Dữ liệu tốt</summary>
-        Good = 0x00,
-
-        /// <summary>Overflow - Vượt quá phạm vi</summary>
-        Overflow = 0x01,
-
-        /// <summary>Blocked - Bị chặn</summary>
-        Blocked = 0x10,
-
-        /// <summary>Substituted - Bị thay thế</summary>
-        Substituted = 0x20,
-
-        /// <summary>Not Topical - Không cập nhật</summary>
-        NotTopical = 0x40,
-
-        /// <summary>Invalid - Không hợp lệ</summary>
-        Invalid = 0x80,
-
-        /// <summary>Mask để lấy tất cả quality bits</summary>
-        QualityMask = 0xF0
+        /// <summary>Chỉ đọc</summary>
+        ReadOnly,
+        /// <summary>Đọc và ghi</summary>
+        ReadWrite
     }
 
     /// <summary>
-    /// Trạng thái Single Point
+    /// Quality Descriptor structure cho IEC104
     /// </summary>
-    public enum SinglePointState : byte
+    public struct IEC104QualityDescriptor
     {
-        /// <summary>Off/False</summary>
-        Off = 0,
+        #region PROPERTIES
 
-        /// <summary>On/True</summary>
-        On = 1
+        /// <summary>Overflow bit (bit 0)</summary>
+        public bool Overflow { get; set; }
+
+        /// <summary>Blocked bit (bit 4)</summary>
+        public bool Blocked { get; set; }
+
+        /// <summary>Substituted bit (bit 5)</summary>
+        public bool Substituted { get; set; }
+
+        /// <summary>Not topical bit (bit 6)</summary>
+        public bool NotTopical { get; set; }
+
+        /// <summary>Invalid bit (bit 7)</summary>
+        public bool Invalid { get; set; }
+
+        /// <summary>Kiểm tra dữ liệu có tốt không</summary>
+        public bool IsGood => !Invalid && !NotTopical;
+
+        /// <summary>Raw quality byte</summary>
+        public byte RawValue { get; set; }
+
+        #endregion
+
+        #region CONSTRUCTORS
+
+        /// <summary>
+        /// Constructor từ byte value
+        /// </summary>
+        /// <param name="qualityByte">Quality byte</param>
+        public IEC104QualityDescriptor(byte qualityByte)
+        {
+            RawValue = qualityByte;
+            Overflow = (qualityByte & IEC104Constants.QDS_OVERFLOW) != 0;
+            Blocked = (qualityByte & IEC104Constants.QDS_BLOCKED) != 0;
+            Substituted = (qualityByte & IEC104Constants.QDS_SUBSTITUTED) != 0;
+            NotTopical = (qualityByte & IEC104Constants.QDS_NOT_TOPICAL) != 0;
+            Invalid = (qualityByte & IEC104Constants.QDS_INVALID) != 0;
+        }
+
+        #endregion
+
+        #region METHODS
+
+        /// <summary>
+        /// Chuyển thành byte value
+        /// </summary>
+        /// <returns>Quality byte</returns>
+        public byte ToByte()
+        {
+            byte result = 0;
+            if (Overflow) result |= IEC104Constants.QDS_OVERFLOW;
+            if (Blocked) result |= IEC104Constants.QDS_BLOCKED;
+            if (Substituted) result |= IEC104Constants.QDS_SUBSTITUTED;
+            if (NotTopical) result |= IEC104Constants.QDS_NOT_TOPICAL;
+            if (Invalid) result |= IEC104Constants.QDS_INVALID;
+            return result;
+        }
+
+        /// <summary>
+        /// Override ToString
+        /// </summary>
+        /// <returns>String representation</returns>
+        public override string ToString()
+        {
+            var flags = new List<string>();
+            if (Invalid) flags.Add("INVALID");
+            if (NotTopical) flags.Add("NOT_TOPICAL");
+            if (Substituted) flags.Add("SUBSTITUTED");
+            if (Blocked) flags.Add("BLOCKED");
+            if (Overflow) flags.Add("OVERFLOW");
+
+            return flags.Count > 0 ? string.Join("|", flags) : "GOOD";
+        }
+
+        #endregion
     }
 
     /// <summary>
-    /// Trạng thái Double Point
+    /// Double Point Values cho IEC104
     /// </summary>
-    public enum DoublePointState : byte
+    public enum DoublePointValue : byte
     {
         /// <summary>Indeterminate or intermediate state</summary>
-        Indeterminate = 0,
+        Indeterminate = IEC104Constants.DPI_INDETERMINATE,
 
-        /// <summary>Determined state OFF</summary>
-        Off = 1,
+        /// <summary>OFF</summary>
+        OFF = IEC104Constants.DPI_OFF,
 
-        /// <summary>Determined state ON</summary>
-        On = 2,
+        /// <summary>ON</summary>
+        ON = IEC104Constants.DPI_ON,
 
         /// <summary>Indeterminate state</summary>
-        Indeterminate2 = 3
+        Indeterminate2 = IEC104Constants.DPI_INDETERMINATE_2
     }
 
     /// <summary>
-    /// Cause of Transmission
+    /// Step Command Values cho IEC104
     /// </summary>
-    public enum CauseOfTransmission : byte
+    public enum StepCommandValue : byte
     {
-        /// <summary>Not used</summary>
-        NotUsed = 0,
+        /// <summary>Not permitted</summary>
+        NotPermitted = IEC104Constants.RCS_NOT_PERMITTED,
 
-        /// <summary>Periodic, cyclic</summary>
-        Periodic = 1,
+        /// <summary>LOWER</summary>
+        Lower = IEC104Constants.RCS_LOWER,
 
-        /// <summary>Background scan</summary>
-        BackgroundScan = 2,
+        /// <summary>HIGHER</summary>
+        Higher = IEC104Constants.RCS_HIGHER,
 
-        /// <summary>Spontaneous</summary>
-        Spontaneous = 3,
-
-        /// <summary>Initialized</summary>
-        Initialized = 4,
-
-        /// <summary>Request or requested</summary>
-        Request = 5,
-
-        /// <summary>Activation</summary>
-        Activation = 6,
-
-        /// <summary>Activation confirmation</summary>
-        ActivationConfirmation = 7,
-
-        /// <summary>Deactivation</summary>
-        Deactivation = 8,
-
-        /// <summary>Deactivation confirmation</summary>
-        DeactivationConfirmation = 9,
-
-        /// <summary>Activation termination</summary>
-        ActivationTermination = 10,
-
-        /// <summary>Return information caused by a remote command</summary>
-        ReturnInfoRemote = 11,
-
-        /// <summary>Return information caused by a local command</summary>
-        ReturnInfoLocal = 12,
-
-        /// <summary>File transfer</summary>
-        FileTransfer = 13,
-
-        /// <summary>Interrogated by station interrogation</summary>
-        InterrogatedByStation = 20,
-
-        /// <summary>Interrogated by group 1</summary>
-        InterrogatedByGroup1 = 21,
-
-        /// <summary>Interrogated by group 2</summary>
-        InterrogatedByGroup2 = 22,
-
-        /// <summary>Interrogated by group 3</summary>
-        InterrogatedByGroup3 = 23,
-
-        /// <summary>Interrogated by group 4</summary>
-        InterrogatedByGroup4 = 24,
-
-        /// <summary>Interrogated by group 5</summary>
-        InterrogatedByGroup5 = 25,
-
-        /// <summary>Interrogated by group 6</summary>
-        InterrogatedByGroup6 = 26,
-
-        /// <summary>Interrogated by group 7</summary>
-        InterrogatedByGroup7 = 27,
-
-        /// <summary>Interrogated by group 8</summary>
-        InterrogatedByGroup8 = 28,
-
-        /// <summary>Interrogated by group 9</summary>
-        InterrogatedByGroup9 = 29,
-
-        /// <summary>Interrogated by group 10</summary>
-        InterrogatedByGroup10 = 30,
-
-        /// <summary>Interrogated by group 11</summary>
-        InterrogatedByGroup11 = 31,
-
-        /// <summary>Interrogated by group 12</summary>
-        InterrogatedByGroup12 = 32,
-
-        /// <summary>Interrogated by group 13</summary>
-        InterrogatedByGroup13 = 33,
-
-        /// <summary>Interrogated by group 14</summary>
-        InterrogatedByGroup14 = 34,
-
-        /// <summary>Interrogated by group 15</summary>
-        InterrogatedByGroup15 = 35,
-
-        /// <summary>Interrogated by group 16</summary>
-        InterrogatedByGroup16 = 36,
-
-        /// <summary>Requested by counter interrogation</summary>
-        RequestedByCounterInterrogation = 37,
-
-        /// <summary>Unknown type identification</summary>
-        UnknownTypeId = 44,
-
-        /// <summary>Unknown cause of transmission</summary>
-        UnknownCot = 45,
-
-        /// <summary>Unknown common address</summary>
-        UnknownCommonAddress = 46,
-
-        /// <summary>Unknown information object address</summary>
-        UnknownIoa = 47
+        /// <summary>Not permitted</summary>
+        NotPermitted2 = IEC104Constants.RCS_NOT_PERMITTED_2
     }
 
     /// <summary>
-    /// Loại Interrogation
+    /// Extension methods cho IEC104DataType
     /// </summary>
-    public enum InterrogationType : byte
+    public static class IEC104DataTypeExtensions
     {
-        /// <summary>Station interrogation (global)</summary>
-        General = 20,
+        /// <summary>
+        /// Lấy display name cho data type
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>Display name</returns>
+        public static string ToDisplayName(this IEC104DataType dataType)
+        {
+            switch (dataType)
+            {
+                case IEC104DataType.SinglePoint:
+                    return "Single Point";
+                case IEC104DataType.DoublePoint:
+                    return "Double Point";
+                case IEC104DataType.StepPosition:
+                    return "Step Position";
+                case IEC104DataType.Bitstring32:
+                    return "Bitstring 32";
+                case IEC104DataType.NormalizedValue:
+                    return "Normalized Value";
+                case IEC104DataType.ScaledValue:
+                    return "Scaled Value";
+                case IEC104DataType.FloatValue:
+                    return "Float Value";
+                case IEC104DataType.IntegratedTotals:
+                    return "Integrated Totals";
+                case IEC104DataType.SingleCommand:
+                    return "Single Command";
+                case IEC104DataType.DoubleCommand:
+                    return "Double Command";
+                case IEC104DataType.StepCommand:
+                    return "Step Command";
+                case IEC104DataType.NormalizedSetpoint:
+                    return "Normalized Setpoint";
+                case IEC104DataType.ScaledSetpoint:
+                    return "Scaled Setpoint";
+                case IEC104DataType.FloatSetpoint:
+                    return "Float Setpoint";
+                case IEC104DataType.InterrogationCommand:
+                    return "Interrogation Command";
+                case IEC104DataType.CounterInterrogationCommand:
+                    return "Counter Interrogation";
+                case IEC104DataType.ReadCommand:
+                    return "Read Command";
+                case IEC104DataType.ClockSynchronizationCommand:
+                    return "Clock Synchronization";
+                case IEC104DataType.ResetProcessCommand:
+                    return "Reset Process";
+                default:
+                    return dataType.ToString();
+            }
+        }
 
-        /// <summary>Group 1 interrogation</summary>
-        Group1 = 21,
+        /// <summary>
+        /// Parse string thành IEC104DataType
+        /// </summary>
+        /// <param name="dataTypeString">String data type</param>
+        /// <returns>IEC104DataType</returns>
+        public static IEC104DataType GetIEC104DataType(this string dataTypeString)
+        {
+            if (string.IsNullOrWhiteSpace(dataTypeString))
+                return IEC104DataType.SinglePoint;
 
-        /// <summary>Group 2 interrogation</summary>
-        Group2 = 22,
+            var normalized = dataTypeString.ToUpper().Replace(" ", "").Replace("_", "");
 
-        /// <summary>Group 3 interrogation</summary>
-        Group3 = 23,
+            switch (normalized)
+            {
+                case "SINGLEPOINT":
+                case "SP":
+                    return IEC104DataType.SinglePoint;
 
-        /// <summary>Group 4 interrogation</summary>
-        Group4 = 24,
+                case "DOUBLEPOINT":
+                case "DP":
+                    return IEC104DataType.DoublePoint;
 
-        /// <summary>Group 5 interrogation</summary>
-        Group5 = 25,
+                case "STEPPOSITION":
+                case "ST":
+                    return IEC104DataType.StepPosition;
 
-        /// <summary>Group 6 interrogation</summary>
-        Group6 = 26,
+                case "BITSTRING32":
+                case "BO":
+                    return IEC104DataType.Bitstring32;
 
-        /// <summary>Group 7 interrogation</summary>
-        Group7 = 27,
+                case "NORMALIZEDVALUE":
+                case "NORMALIZED":
+                case "NVA":
+                    return IEC104DataType.NormalizedValue;
 
-        /// <summary>Group 8 interrogation</summary>
-        Group8 = 28,
+                case "SCALEDVALUE":
+                case "SCALED":
+                case "SVA":
+                    return IEC104DataType.ScaledValue;
 
-        /// <summary>Group 9 interrogation</summary>
-        Group9 = 29,
+                case "FLOATVALUE":
+                case "FLOAT":
+                    return IEC104DataType.FloatValue;
 
-        /// <summary>Group 10 interrogation</summary>
-        Group10 = 30,
+                case "INTEGRATEDTOTALS":
+                case "INTEGRATED":
+                case "IT":
+                    return IEC104DataType.IntegratedTotals;
 
-        /// <summary>Group 11 interrogation</summary>
-        Group11 = 31,
+                case "SINGLECOMMAND":
+                case "SC":
+                    return IEC104DataType.SingleCommand;
 
-        /// <summary>Group 12 interrogation</summary>
-        Group12 = 32,
+                case "DOUBLECOMMAND":
+                case "DC":
+                    return IEC104DataType.DoubleCommand;
 
-        /// <summary>Group 13 interrogation</summary>
-        Group13 = 33,
+                case "STEPCOMMAND":
+                case "RC":
+                    return IEC104DataType.StepCommand;
 
-        /// <summary>Group 14 interrogation</summary>
-        Group14 = 34,
+                case "NORMALIZEDSETPOINT":
+                case "NORMALIZEDSET":
+                    return IEC104DataType.NormalizedSetpoint;
 
-        /// <summary>Group 15 interrogation</summary>
-        Group15 = 35,
+                case "SCALEDSETPOINT":
+                case "SCALEDSET":
+                    return IEC104DataType.ScaledSetpoint;
 
-        /// <summary>Group 16 interrogation</summary>
-        Group16 = 36
+                case "FLOATSETPOINT":
+                case "FLOATSET":
+                    return IEC104DataType.FloatSetpoint;
+
+                case "INTERROGATION":
+                case "IC":
+                    return IEC104DataType.InterrogationCommand;
+
+                case "COUNTERINTERROGATION":
+                case "CI":
+                    return IEC104DataType.CounterInterrogationCommand;
+
+                case "READ":
+                case "RD":
+                    return IEC104DataType.ReadCommand;
+
+                case "CLOCKSYNCHRONIZATION":
+                case "CLOCK":
+                case "CS":
+                    return IEC104DataType.ClockSynchronizationCommand;
+
+                case "RESETPROCESS":
+                case "RESET":
+                case "RP":
+                    return IEC104DataType.ResetProcessCommand;
+
+                default:
+                    return IEC104DataType.SinglePoint;
+            }
+        }
+
+        /// <summary>
+        /// Kiểm tra data type có phải là monitoring type không
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>True nếu là monitoring type</returns>
+        public static bool IsMonitoringType(this IEC104DataType dataType)
+        {
+            return IEC104Address.IsMonitoringType((byte)dataType);
+        }
+
+        /// <summary>
+        /// Kiểm tra data type có phải là control type không
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>True nếu là control type</returns>
+        public static bool IsControlType(this IEC104DataType dataType)
+        {
+            return IEC104Address.IsControlType((byte)dataType);
+        }
+
+        /// <summary>
+        /// Kiểm tra data type có phải là system type không
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>True nếu là system type</returns>
+        public static bool IsSystemType(this IEC104DataType dataType)
+        {
+            return IEC104Address.IsSystemType((byte)dataType);
+        }
+
+        /// <summary>
+        /// Lấy kích thước element cho data type
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>Kích thước element (bytes)</returns>
+        public static int GetElementSize(this IEC104DataType dataType)
+        {
+            return IEC104Address.GetIEC104ElementSize((byte)dataType);
+        }
+
+        /// <summary>
+        /// Lấy access right cho data type
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>Access right</returns>
+        public static IEC104AccessRight GetAccessRight(this IEC104DataType dataType)
+        {
+            if (dataType.IsMonitoringType())
+                return IEC104AccessRight.ReadOnly;
+            else if (dataType.IsControlType() || dataType.IsSystemType())
+                return IEC104AccessRight.ReadWrite;
+            else
+                return IEC104AccessRight.ReadOnly;
+        }
+
+        /// <summary>
+        /// Kiểm tra có phải discrete data type không
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>True nếu là discrete</returns>
+        public static bool IsDiscrete(this IEC104DataType dataType)
+        {
+            return dataType == IEC104DataType.SinglePoint ||
+                   dataType == IEC104DataType.DoublePoint ||
+                   dataType == IEC104DataType.SingleCommand ||
+                   dataType == IEC104DataType.DoubleCommand;
+        }
+
+        /// <summary>
+        /// Lấy TypeID byte cho data type
+        /// </summary>
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>TypeID byte</returns>
+        public static byte GetTypeID(this IEC104DataType dataType)
+        {
+            return (byte)dataType;
+        }
     }
 
     /// <summary>
-    /// Loại Counter Interrogation
+    /// Extension methods cho IEC104AccessRight
     /// </summary>
-    public enum CounterInterrogationType : byte
+    public static class IEC104AccessRightExtensions
     {
-        /// <summary>Request counter group 1</summary>
-        Group1 = 1,
+        /// <summary>
+        /// Lấy display name cho access right
+        /// </summary>
+        /// <param name="accessRight">Access right</param>
+        /// <returns>Display name</returns>
+        public static string ToDisplayName(this IEC104AccessRight accessRight)
+        {
+            switch (accessRight)
+            {
+                case IEC104AccessRight.ReadOnly:
+                    return "ReadOnly";
+                case IEC104AccessRight.ReadWrite:
+                    return "ReadWrite";
+                default:
+                    return accessRight.ToString();
+            }
+        }
 
-        /// <summary>Request counter group 2</summary>
-        Group2 = 2,
+        /// <summary>
+        /// Parse string thành IEC104AccessRight
+        /// </summary>
+        /// <param name="accessRightString">String access right</param>
+        /// <returns>IEC104AccessRight</returns>
+        public static IEC104AccessRight GetIEC104AccessRight(this string accessRightString)
+        {
+            if (string.IsNullOrWhiteSpace(accessRightString))
+                return IEC104AccessRight.ReadOnly;
 
-        /// <summary>Request counter group 3</summary>
-        Group3 = 3,
+            var normalized = accessRightString.ToUpper().Replace(" ", "");
 
-        /// <summary>Request counter group 4</summary>
-        Group4 = 4,
+            switch (normalized)
+            {
+                case "READWRITE":
+                case "RW":
+                case "WRITE":
+                    return IEC104AccessRight.ReadWrite;
 
-        /// <summary>General request counter</summary>
-        General = 5
+                case "READONLY":
+                case "RO":
+                case "READ":
+                default:
+                    return IEC104AccessRight.ReadOnly;
+            }
+        }
     }
 
     /// <summary>
-    /// Qualifier of Command
+    /// Utility class cho các operations chung của IEC104 data types
     /// </summary>
-    [Flags]
-    public enum QualifierOfCommand : byte
-    {
-        /// <summary>No additional definition</summary>
-        None = 0x00,
-
-        /// <summary>Short pulse duration</summary>
-        ShortPulse = 0x00,
-
-        /// <summary>Long pulse duration</summary>
-        LongPulse = 0x01,
-
-        /// <summary>Persistent output</summary>
-        Persistent = 0x02,
-
-        /// <summary>Reserved</summary>
-        Reserved = 0x03,
-
-        /// <summary>Select command</summary>
-        Select = 0x80,
-
-        /// <summary>Execute command</summary>
-        Execute = 0x00
-    }
-
-    /// <summary>
-    /// Helper class cho data types
-    /// </summary>
-    public static class DataTypeHelper
+    public static class IEC104DataUtilities
     {
         /// <summary>
-        /// Lấy kích thước của data type (bytes)
+        /// Tạo Quality Descriptor mặc định (GOOD)
+        /// </summary>
+        /// <returns>Good quality descriptor</returns>
+        public static IEC104QualityDescriptor CreateGoodQuality()
+        {
+            return new IEC104QualityDescriptor(0);
+        }
+
+        /// <summary>
+        /// Tạo Quality Descriptor với Invalid flag
+        /// </summary>
+        /// <returns>Invalid quality descriptor</returns>
+        public static IEC104QualityDescriptor CreateInvalidQuality()
+        {
+            return new IEC104QualityDescriptor(IEC104Constants.QDS_INVALID);
+        }
+
+        /// <summary>
+        /// Tạo Quality Descriptor với Not Topical flag
+        /// </summary>
+        /// <returns>Not topical quality descriptor</returns>
+        public static IEC104QualityDescriptor CreateNotTopicalQuality()
+        {
+            return new IEC104QualityDescriptor(IEC104Constants.QDS_NOT_TOPICAL);
+        }
+
+        /// <summary>
+        /// Validate value cho specific data type
         /// </summary>
         /// <param name="dataType">Data type</param>
-        /// <returns>Kích thước (bytes)</returns>
-        public static int GetSize(DataType dataType)
+        /// <param name="value">Value string</param>
+        /// <param name="errorMessage">Error message nếu có</param>
+        /// <returns>True nếu valid</returns>
+        public static bool ValidateValue(IEC104DataType dataType, string value, out string errorMessage)
         {
-            switch (dataType)
+            errorMessage = "";
+
+            if (string.IsNullOrWhiteSpace(value))
             {
-                case DataType.Bool:
-                case DataType.Byte:
-                case DataType.SByte:
-                case DataType.SinglePoint:
-                case DataType.DoublePoint:
-                case DataType.StepPosition:
-                case DataType.Quality:
-                    return 1;
+                errorMessage = "Value cannot be empty";
+                return false;
+            }
 
-                case DataType.UInt16:
-                case DataType.Int16:
-                case DataType.NormalizedValue:
-                case DataType.ScaledValue:
-                    return 2;
+            try
+            {
+                switch (dataType)
+                {
+                    case IEC104DataType.SinglePoint:
+                    case IEC104DataType.SingleCommand:
+                        // Phải là 0 hoặc 1
+                        if (!value.Equals("0") && !value.Equals("1") &&
+                            !value.ToLower().Equals("true") && !value.ToLower().Equals("false"))
+                        {
+                            errorMessage = "Single Point/Command value must be 0, 1, true, or false";
+                            return false;
+                        }
+                        break;
 
-                case DataType.UInt32:
-                case DataType.Int32:
-                case DataType.Float:
-                case DataType.Bitstring32:
-                    return 4;
+                    case IEC104DataType.DoublePoint:
+                    case IEC104DataType.DoubleCommand:
+                        // Phải là 0, 1, 2, hoặc 3
+                        if (!byte.TryParse(value, out byte dpValue) || dpValue > 3)
+                        {
+                            errorMessage = "Double Point/Command value must be 0-3";
+                            return false;
+                        }
+                        break;
 
-                case DataType.UInt64:
-                case DataType.Int64:
-                case DataType.Double:
-                    return 8;
+                    case IEC104DataType.StepPosition:
+                    case IEC104DataType.StepCommand:
+                        // Phải là byte value
+                        if (!byte.TryParse(value, out _))
+                        {
+                            errorMessage = "Step Position/Command value must be 0-255";
+                            return false;
+                        }
+                        break;
 
-                case DataType.CP24Time2a:
-                    return 3;
+                    case IEC104DataType.NormalizedValue:
+                    case IEC104DataType.NormalizedSetpoint:
+                        // Phải là short value (-32768 to 32767)
+                        if (!short.TryParse(value, out _))
+                        {
+                            errorMessage = "Normalized value must be -32768 to 32767";
+                            return false;
+                        }
+                        break;
 
-                case DataType.CP56Time2a:
-                    return 7;
+                    case IEC104DataType.ScaledValue:
+                    case IEC104DataType.ScaledSetpoint:
+                        // Phải là short value
+                        if (!short.TryParse(value, out _))
+                        {
+                            errorMessage = "Scaled value must be -32768 to 32767";
+                            return false;
+                        }
+                        break;
 
-                case DataType.IntegratedTotals:
-                    return 5; // 4 bytes value + 1 byte sequence
+                    case IEC104DataType.FloatValue:
+                    case IEC104DataType.FloatSetpoint:
+                        // Phải là float value
+                        if (!float.TryParse(value, out float floatVal))
+                        {
+                            errorMessage = "Float value must be a valid floating point number";
+                            return false;
+                        }
+                        if (float.IsNaN(floatVal) || float.IsInfinity(floatVal))
+                        {
+                            errorMessage = "Float value cannot be NaN or Infinity";
+                            return false;
+                        }
+                        break;
 
-                case DataType.String:
-                case DataType.DateTime:
-                case DataType.Unknown:
-                default:
-                    return 0; // Variable or unknown size
+                    case IEC104DataType.Bitstring32:
+                        // Phải là uint value
+                        if (!uint.TryParse(value, out _))
+                        {
+                            errorMessage = "Bitstring32 value must be 0 to 4294967295";
+                            return false;
+                        }
+                        break;
+
+                    case IEC104DataType.IntegratedTotals:
+                        // Phải là uint value (counter value)
+                        if (!uint.TryParse(value, out _))
+                        {
+                            errorMessage = "Integrated Totals value must be 0 to 4294967295";
+                            return false;
+                        }
+                        break;
+
+                    default:
+                        // System commands có thể có format khác
+                        break;
+                }
+
+                return true;
+            }
+            catch
+            {
+                errorMessage = $"Invalid value format for {dataType.ToDisplayName()}";
+                return false;
             }
         }
 
         /// <summary>
-        /// Kiểm tra data type có phải là numeric không
+        /// Lấy default value cho IEC104 data type
         /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>True nếu là numeric</returns>
-        public static bool IsNumeric(DataType dataType)
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>Default value as string</returns>
+        public static string GetDefaultValue(IEC104DataType dataType)
         {
             switch (dataType)
             {
-                case DataType.Byte:
-                case DataType.SByte:
-                case DataType.UInt16:
-                case DataType.Int16:
-                case DataType.UInt32:
-                case DataType.Int32:
-                case DataType.UInt64:
-                case DataType.Int64:
-                case DataType.Float:
-                case DataType.Double:
-                case DataType.NormalizedValue:
-                case DataType.ScaledValue:
-                case DataType.IntegratedTotals:
-                    return true;
+                case IEC104DataType.SinglePoint:
+                case IEC104DataType.SingleCommand:
+                    return "0";
+
+                case IEC104DataType.DoublePoint:
+                case IEC104DataType.DoubleCommand:
+                    return "0"; // Indeterminate
+
+                case IEC104DataType.StepPosition:
+                case IEC104DataType.StepCommand:
+                    return "0";
+
+                case IEC104DataType.NormalizedValue:
+                case IEC104DataType.NormalizedSetpoint:
+                case IEC104DataType.ScaledValue:
+                case IEC104DataType.ScaledSetpoint:
+                    return "0";
+
+                case IEC104DataType.FloatValue:
+                case IEC104DataType.FloatSetpoint:
+                    return "0.0";
+
+                case IEC104DataType.Bitstring32:
+                case IEC104DataType.IntegratedTotals:
+                    return "0";
 
                 default:
-                    return false;
+                    return "0";
             }
         }
 
         /// <summary>
-        /// Kiểm tra data type có phải là integer không
+        /// Lấy range description cho data type
         /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>True nếu là integer</returns>
-        public static bool IsInteger(DataType dataType)
+        /// <param name="dataType">IEC104 data type</param>
+        /// <returns>Range description</returns>
+        public static string GetValueRange(IEC104DataType dataType)
         {
             switch (dataType)
             {
-                case DataType.Byte:
-                case DataType.SByte:
-                case DataType.UInt16:
-                case DataType.Int16:
-                case DataType.UInt32:
-                case DataType.Int32:
-                case DataType.UInt64:
-                case DataType.Int64:
-                case DataType.ScaledValue:
-                case DataType.IntegratedTotals:
-                    return true;
+                case IEC104DataType.SinglePoint:
+                case IEC104DataType.SingleCommand:
+                    return "0 (OFF) hoặc 1 (ON)";
+
+                case IEC104DataType.DoublePoint:
+                case IEC104DataType.DoubleCommand:
+                    return "0 (Indeterminate), 1 (OFF), 2 (ON), 3 (Indeterminate)";
+
+                case IEC104DataType.StepPosition:
+                case IEC104DataType.StepCommand:
+                    return "0 đến 255";
+
+                case IEC104DataType.NormalizedValue:
+                case IEC104DataType.NormalizedSetpoint:
+                    return "-32768 đến +32767 (normalized)";
+
+                case IEC104DataType.ScaledValue:
+                case IEC104DataType.ScaledSetpoint:
+                    return "-32768 đến +32767 (scaled)";
+
+                case IEC104DataType.FloatValue:
+                case IEC104DataType.FloatSetpoint:
+                    return "IEEE 754 floating point";
+
+                case IEC104DataType.Bitstring32:
+                    return "0 đến 4294967295 (32-bit bitstring)";
+
+                case IEC104DataType.IntegratedTotals:
+                    return "0 đến 4294967295 (counter value)";
 
                 default:
-                    return false;
-            }
-        }
-
-        /// <summary>
-        /// Kiểm tra data type có phải là floating point không
-        /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>True nếu là floating point</returns>
-        public static bool IsFloatingPoint(DataType dataType)
-        {
-            switch (dataType)
-            {
-                case DataType.Float:
-                case DataType.Double:
-                case DataType.NormalizedValue:
-                    return true;
-
-                default:
-                    return false;
-            }
-        }
-
-        /// <summary>
-        /// Kiểm tra data type có phải là IEC104 specific không
-        /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>True nếu là IEC104 specific</returns>
-        public static bool IsIEC104Specific(DataType dataType)
-        {
-            switch (dataType)
-            {
-                case DataType.NormalizedValue:
-                case DataType.ScaledValue:
-                case DataType.SinglePoint:
-                case DataType.DoublePoint:
-                case DataType.StepPosition:
-                case DataType.Bitstring32:
-                case DataType.IntegratedTotals:
-                case DataType.CP56Time2a:
-                case DataType.CP24Time2a:
-                case DataType.Quality:
-                    return true;
-
-                default:
-                    return false;
-            }
-        }
-
-        /// <summary>
-        /// Lấy tên hiển thị của data type
-        /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>Tên hiển thị</returns>
-        public static string GetDisplayName(DataType dataType)
-        {
-            switch (dataType)
-            {
-                case DataType.Bool: return "Boolean";
-                case DataType.Byte: return "Byte (8-bit unsigned)";
-                case DataType.SByte: return "SByte (8-bit signed)";
-                case DataType.UInt16: return "UInt16 (16-bit unsigned)";
-                case DataType.Int16: return "Int16 (16-bit signed)";
-                case DataType.UInt32: return "UInt32 (32-bit unsigned)";
-                case DataType.Int32: return "Int32 (32-bit signed)";
-                case DataType.UInt64: return "UInt64 (64-bit unsigned)";
-                case DataType.Int64: return "Int64 (64-bit signed)";
-                case DataType.Float: return "Float (32-bit)";
-                case DataType.Double: return "Double (64-bit)";
-                case DataType.String: return "String";
-                case DataType.DateTime: return "DateTime";
-                case DataType.NormalizedValue: return "Normalized Value (-1.0 to +1.0)";
-                case DataType.ScaledValue: return "Scaled Value (with factor)";
-                case DataType.SinglePoint: return "Single Point (On/Off)";
-                case DataType.DoublePoint: return "Double Point (Off/On/Intermediate/Invalid)";
-                case DataType.StepPosition: return "Step Position";
-                case DataType.Bitstring32: return "Bitstring 32-bit";
-                case DataType.IntegratedTotals: return "Integrated Totals";
-                case DataType.CP56Time2a: return "CP56Time2a (7-byte timestamp)";
-                case DataType.CP24Time2a: return "CP24Time2a (3-byte timestamp)";
-                case DataType.Quality: return "Quality Descriptor";
-                case DataType.Unknown: return "Unknown";
-                default: return dataType.ToString();
-            }
-        }
-
-        /// <summary>
-        /// Lấy default value cho data type
-        /// </summary>
-        /// <param name="dataType">Data type</param>
-        /// <returns>Default value</returns>
-        public static object GetDefaultValue(DataType dataType)
-        {
-            switch (dataType)
-            {
-                case DataType.Bool:
-                case DataType.SinglePoint:
-                    return false;
-
-                case DataType.Byte:
-                    return (byte)0;
-
-                case DataType.SByte:
-                    return (sbyte)0;
-
-                case DataType.UInt16:
-                    return (ushort)0;
-
-                case DataType.Int16:
-                    return (short)0;
-
-                case DataType.UInt32:
-                case DataType.Bitstring32:
-                    return (uint)0;
-
-                case DataType.Int32:
-                case DataType.ScaledValue:
-                case DataType.IntegratedTotals:
-                    return (int)0;
-
-                case DataType.UInt64:
-                    return (ulong)0;
-
-                case DataType.Int64:
-                    return (long)0;
-
-                case DataType.Float:
-                case DataType.NormalizedValue:
-                    return 0.0f;
-
-                case DataType.Double:
-                    return 0.0d;
-
-                case DataType.String:
-                    return string.Empty;
-
-                case DataType.DateTime:
-                case DataType.CP56Time2a:
-                case DataType.CP24Time2a:
-                    return DateTime.MinValue;
-
-                case DataType.DoublePoint:
-                    return DoublePointState.Indeterminate;
-
-                case DataType.StepPosition:
-                    return (byte)0;
-
-                case DataType.Quality:
-                    return Quality.Good;
-
-                default:
-                    return null;
+                    return "Xem IEC104 standard";
             }
         }
     }
