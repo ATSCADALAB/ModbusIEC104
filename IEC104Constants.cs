@@ -1,7 +1,7 @@
 ﻿namespace IEC104
 {
     /// <summary>
-    /// Định nghĩa các hằng số cho giao thức IEC104
+    /// Định nghĩa các hằng số cho giao thức IEC104 - FIXED VERSION
     /// </summary>
     public static class IEC104Constants
     {
@@ -247,10 +247,13 @@
 
         #endregion
 
-        #region RESULT CODES
+        #region RESULT CODES - FIXED
 
         /// <summary>Operation successful</summary>
         public const int RESULT_OK = 0;
+
+        /// <summary>No error - same as RESULT_OK for compatibility</summary>
+        public const int ERROR_NONE = 0;
 
         /// <summary>General error</summary>
         public const int RESULT_ERROR = -1;
@@ -319,7 +322,7 @@
 
         #endregion
 
-        #region COMMAND QUALIFIER BITS
+        #region COMMAND QUALIFIER BITS - FIXED
 
         /// <summary>Select/Execute bit - Execute</summary>
         public const byte SE_EXECUTE = 0x00;
@@ -338,6 +341,25 @@
 
         /// <summary>Qualifier of command - Persistent output</summary>
         public const byte QU_PERSISTENT = 3;
+
+        #endregion
+
+        #region COUNTER INTERROGATION QUALIFIER
+
+        /// <summary>General counter request</summary>
+        public const byte QCC_RQT_GENERAL = 5;
+
+        /// <summary>Request counter group 1</summary>
+        public const byte QCC_RQT_GROUP_1 = 1;
+
+        /// <summary>Request counter group 2</summary>
+        public const byte QCC_RQT_GROUP_2 = 2;
+
+        /// <summary>Request counter group 3</summary>
+        public const byte QCC_RQT_GROUP_3 = 3;
+
+        /// <summary>Request counter group 4</summary>
+        public const byte QCC_RQT_GROUP_4 = 4;
 
         #endregion
     }

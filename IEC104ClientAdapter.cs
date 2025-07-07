@@ -1,10 +1,10 @@
-﻿using System;
+﻿using ModbusIEC104;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using ModbusIEC104.Common;
 
-namespace ModbusIEC104
+namespace IEC104
 {
     /// <summary>
     /// Client Adapter cho IEC104 - wrapper around IEC104Client

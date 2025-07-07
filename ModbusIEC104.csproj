@@ -56,6 +56,8 @@
     <Compile Include="IEC104Constants.cs" />
     <Compile Include="IEC104Driver.cs" />
     <Compile Include="IEC104Frame.cs" />
+    <Compile Include="IEC104Interfaces.cs" />
+    <Compile Include="IEC104MissingTypes.cs" />
     <Compile Include="IEC104Socket.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
