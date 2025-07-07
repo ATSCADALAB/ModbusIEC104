@@ -34,9 +34,10 @@ namespace ModbusIEC104
         private Timer t2Timer; // Acknowledge timeout
         private Timer t3Timer; // Test frame timeout
 
-        // Frame queues
-        private readonly Queue<IEC104Frame> sendQueue = new Queue<IEC104Frame>();
-        private readonly Queue<IEC104Frame> receiveQueue = new Queue<IEC104Frame>();
+        // --- FIX: Thay đổi Queue từ IEC104Frame sang ASDU ---
+        // Lý do: Cần truy cập vào thông tin trong ASDU (như COT) ở các lớp cao hơn.
+        private readonly Queue<ASDU> asduQueue = new Queue<ASDU>();
+        private readonly Queue<IEC104Frame> U_S_FrameQueue = new Queue<IEC104Frame>(); // Queue cho U và S frame nếu cần
 
         // State
         private IEC104ConnectionState connectionState = IEC104ConnectionState.Disconnected;
@@ -178,6 +179,9 @@ namespace ModbusIEC104
 
                     // Khởi động timers
                     StartTimers();
+
+                    // Bắt đầu một luồng riêng để xử lý dữ liệu nhận được
+                    Task.Run(() => ProcessReceiveLoop());
 
                     return IEC104Constants.ERROR_NONE;
                 }
@@ -335,13 +339,14 @@ namespace ModbusIEC104
                         StopDataTransfer();
                     }
 
+                    connectionState = IEC104ConnectionState.Disconnected;
+
                     // Dừng timers
                     StopTimers();
 
                     // Đóng socket
                     socket?.Close();
 
-                    connectionState = IEC104ConnectionState.Disconnected;
                     return IEC104Constants.ERROR_NONE;
                 }
             }
@@ -371,29 +376,9 @@ namespace ModbusIEC104
                 }
 
                 // Tạo ASDU cho lệnh interrogation
-                var asdu = new ASDU
-                {
-                    TypeID = IEC104Constants.C_IC_NA_1,
-                    SequenceBit = false,
-                    NumberOfElements = 1,
-                    TestBit = false,
-                    NegativeBit = false,
-                    CauseOfTransmission = IEC104Constants.COT_ACTIVATION,
-                    OriginatorAddress = 0,
-                    CommonAddress = commonAddress
-                };
+                var asdu = ASDU.CreateGeneralInterrogation(commonAddress, qualifier);
 
-                // Tạo information object
-                var infoObject = new InformationObject
-                {
-                    ObjectAddress = 0, // IOA = 0 cho station interrogation
-                    Value = qualifier,
-                    Quality = IEC104Constants.QDS_GOOD
-                };
-
-                asdu.InformationObjects.Add(infoObject);
-
-                return SendASADU(asdu);
+                return SendASDU(asdu);
             }
             catch (Exception ex)
             {
@@ -448,9 +433,9 @@ namespace ModbusIEC104
                     Quality = selectBeforeOperate ? IEC104Constants.SELECT_COMMAND : IEC104Constants.EXECUTE_COMMAND
                 };
 
-                asdu.InformationObjects.Add(infoObject);
+                asdu.AddInformationObject(infoObject);
 
-                return SendASADU(asdu);
+                return SendASDU(asdu);
             }
             catch (Exception ex)
             {
@@ -459,46 +444,21 @@ namespace ModbusIEC104
             }
         }
 
-        /// <summary>
-        /// Đọc information objects từ receive queue
-        /// </summary>
-        /// <param name="objects">Danh sách objects đã đọc</param>
-        /// <returns>Mã lỗi (0 = thành công)</returns>
-        public int ReadInformationObjects(out List<InformationObject> objects)
+        // --- FIX: Thêm hàm DequeueAllASDUs ---
+        // Lý do: Cung cấp một cách an toàn để lớp cao hơn (Adapter) lấy dữ liệu đã nhận.
+        public List<ASDU> DequeueAllASDUs()
         {
-            objects = new List<InformationObject>();
-
-            try
+            var list = new List<ASDU>();
+            lock (asduQueue)
             {
-                lock (lockObject)
+                while (asduQueue.Count > 0)
                 {
-                    // Đọc frames từ socket
-                    ProcessReceiveFrames();
-
-                    // Xử lý I-frames trong receive queue
-                    while (receiveQueue.Count > 0)
-                    {
-                        var frame = receiveQueue.Dequeue();
-
-                        if (frame.Format == FrameFormat.I_FORMAT && frame.ASDUData != null)
-                        {
-                            var asdu = new ASDU(frame.ASDUData);
-                            if (asdu.IsValid && asdu.InformationObjects != null)
-                            {
-                                objects.AddRange(asdu.InformationObjects);
-                            }
-                        }
-                    }
-
-                    return IEC104Constants.ERROR_NONE;
+                    list.Add(asduQueue.Dequeue());
                 }
             }
-            catch (Exception ex)
-            {
-                LastError = $"ReadInformationObjects error: {ex.Message}";
-                return IEC104Constants.ERROR_INVALID_ASDU;
-            }
+            return list;
         }
+
         #endregion
 
         #region FRAME PROCESSING METHODS
@@ -507,7 +467,7 @@ namespace ModbusIEC104
         /// </summary>
         /// <param name="asdu">ASDU cần gửi</param>
         /// <returns>Mã lỗi (0 = thành công)</returns>
-        private int SendASADU(ASDU asdu)
+        private int SendASDU(ASDU asdu)
         {
             try
             {
@@ -549,35 +509,42 @@ namespace ModbusIEC104
             }
             catch
             {
+                Disconnect();
                 return false;
             }
         }
 
-        /// <summary>
-        /// Xử lý frames nhận được
-        /// </summary>
-        private void ProcessReceiveFrames()
+        // --- FIX: Tạo vòng lặp xử lý nhận dữ liệu riêng biệt ---
+        // Lý do: Tách biệt việc nhận dữ liệu khỏi các luồng gọi chính (như ReadTag),
+        // đảm bảo dữ liệu được xử lý liên tục và không bị block.
+        private void ProcessReceiveLoop()
         {
-            try
+            while (connectionState != IEC104ConnectionState.Disconnected)
             {
-                while (socket.Available >= IEC104Constants.MIN_FRAME_LENGTH)
+                try
                 {
-                    var frame = ReceiveFrame();
-                    if (frame != null)
+                    if (socket.Available > 0)
                     {
-                        ProcessReceivedFrame(frame);
+                        var frame = ReceiveFrame();
+                        if (frame != null && frame.IsValid)
+                        {
+                            ProcessReceivedFrame(frame);
+                        }
                     }
                     else
                     {
-                        break; // Không thể đọc được frame hoàn chỉnh
+                        Thread.Sleep(10); // Đợi một chút nếu không có dữ liệu
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                LastError = $"ProcessReceiveFrames error: {ex.Message}";
+                catch
+                {
+                    // Lỗi xảy ra, có thể do mất kết nối
+                    Disconnect();
+                    break;
+                }
             }
         }
+
 
         /// <summary>
         /// Nhận một frame từ socket
@@ -597,7 +564,7 @@ namespace ModbusIEC104
 
                 // Lấy độ dài APDU
                 var apduLength = receiveBuffer[1];
-                if (apduLength > IEC104Constants.MAX_APDU_LENGTH)
+                if (apduLength > IEC104Constants.MAX_APDU_LENGTH || apduLength < IEC104Constants.CONTROL_FIELD_LENGTH)
                     return null;
 
                 // Đọc phần còn lại của frame
@@ -613,6 +580,7 @@ namespace ModbusIEC104
             }
             catch
             {
+                Disconnect();
                 return null;
             }
         }
@@ -655,8 +623,19 @@ namespace ModbusIEC104
             unacknowledgedIReceived++;
             IReceivedCount++;
 
-            // Thêm vào receive queue
-            receiveQueue.Enqueue(frame);
+            // --- FIX: Parse ASDU và đưa vào asduQueue ---
+            var asdu = new ASDU(frame.ASDUData);
+            if (asdu.IsValid)
+            {
+                lock (asduQueue)
+                {
+                    asduQueue.Enqueue(asdu);
+                }
+            }
+            else
+            {
+                // Xử lý lỗi ASDU không hợp lệ nếu cần
+            }
 
             // Gửi S-frame ACK nếu cần
             if (unacknowledgedIReceived >= parameterW)
@@ -683,6 +662,11 @@ namespace ModbusIEC104
             if (ackedFrames > 0)
             {
                 unacknowledgedISent = Math.Max(0, unacknowledgedISent - ackedFrames);
+            }
+
+            lock (U_S_FrameQueue)
+            {
+                U_S_FrameQueue.Enqueue(frame);
             }
         }
 
@@ -712,12 +696,11 @@ namespace ModbusIEC104
                     // Gửi TESTFR CON
                     SendUFrame(UFrameFunction.TESTFR_CON);
                     break;
+            }
 
-                case UFrameFunction.STARTDT_CON:
-                case UFrameFunction.STOPDT_CON:
-                case UFrameFunction.TESTFR_CON:
-                    // Confirmation frames - không cần xử lý gì thêm
-                    break;
+            lock (U_S_FrameQueue)
+            {
+                U_S_FrameQueue.Enqueue(frame);
             }
         }
 
@@ -773,19 +756,20 @@ namespace ModbusIEC104
 
             while ((DateTime.Now - startTime).TotalMilliseconds < timeoutMs)
             {
-                var frame = ReceiveFrame();
-                if (frame != null)
+                lock (U_S_FrameQueue)
                 {
-                    ProcessReceivedFrame(frame);
-
-                    if (frame.Format == FrameFormat.U_FORMAT &&
-                        frame.GetUFrameFunction() == expectedFunction)
+                    for (int i = 0; i < U_S_FrameQueue.Count; i++)
                     {
-                        return frame;
+                        var frame = U_S_FrameQueue.Dequeue();
+                        if (frame.Format == FrameFormat.U_FORMAT && frame.GetUFrameFunction() == expectedFunction)
+                        {
+                            return frame;
+                        }
+                        // Đưa frame không khớp trở lại queue
+                        U_S_FrameQueue.Enqueue(frame);
                     }
                 }
-
-                Thread.Sleep(10);
+                Thread.Sleep(20);
             }
 
             return null;
@@ -833,6 +817,8 @@ namespace ModbusIEC104
         /// </summary>
         private void StartTimers()
         {
+            StopTimers(); // Dừng timer cũ trước khi bắt đầu
+
             // T1 timer - Send/Test timeout
             t1Timer = new Timer(T1TimerCallback, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -877,8 +863,8 @@ namespace ModbusIEC104
             {
                 lock (lockObject)
                 {
-                    // Gửi S-frame nếu có I-frame chưa ACK
-                    if (unacknowledgedIReceived > 0)
+                    // Gửi S-frame nếu có I-frame chưa ACK và không có traffic gửi đi
+                    if (unacknowledgedIReceived > 0 && (DateTime.Now - lastSentTime).TotalSeconds > TimeoutT2)
                     {
                         SendSFrame();
                     }
@@ -899,8 +885,10 @@ namespace ModbusIEC104
             {
                 lock (lockObject)
                 {
+                    if (connectionState != IEC104ConnectionState.DataTransferStarted) return;
+
                     // Kiểm tra xem có activity gần đây không
-                    var timeSinceLastActivity = DateTime.Now - Math.Max(lastSentTime, lastReceivedTime);
+                    var timeSinceLastActivity = DateTime.Now - lastReceivedTime;
 
                     if (timeSinceLastActivity.TotalSeconds > TimeoutT3)
                     {
@@ -992,9 +980,9 @@ namespace ModbusIEC104
         {
             if (!isDisposed)
             {
+                isDisposed = true;
                 Disconnect();
                 socket?.Dispose();
-                isDisposed = true;
             }
         }
         #endregion

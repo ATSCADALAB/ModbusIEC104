@@ -4,7 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace IEC104
+namespace ModbusIEC104
 {
     public class DeviceReader : IDisposable
     {
